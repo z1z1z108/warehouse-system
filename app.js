@@ -2,6 +2,7 @@
 let db = loadDB();
 let session = JSON.parse(sessionStorage.getItem("wms_session") || "null");
 let view = { page: "home" };
+let moveMenuOpen = false;
 
 const ROLE_LABEL = { admin: "管理員", client: "客戶" };
 
@@ -23,6 +24,7 @@ function logout() {
 }
 
 function productName(id) { return db.products.find(p => p.id === id)?.name || id; }
+function productSkuOf(id) { return db.products.find(p => p.id === id)?.sku || ""; }
 function productUnit(id) { return db.products.find(p => p.id === id)?.unit || ""; }
 function userName(id) { return db.users.find(u => u.id === id)?.name || "-"; }
 function clientName(id) { return db.clients.find(c => c.id === id)?.name || "-"; }
@@ -33,23 +35,52 @@ function warehousesOfClient(clientId) { return db.warehouses.filter(w => w.clien
 function warehouseIdsOfClient(clientId) { return warehousesOfClient(clientId).map(w => w.id); }
 
 function stockOf(productId, warehouseId) {
-  const rec = db.inventory.find(i => i.productId === productId && i.warehouseId === warehouseId);
-  return rec ? rec.quantity : 0;
+  return db.serialUnits.filter(s => s.productId === productId && s.warehouseId === warehouseId).length;
 }
 function totalStock(productId, warehouseIds) {
-  return db.inventory
-    .filter(i => i.productId === productId && (!warehouseIds || warehouseIds.includes(i.warehouseId)))
-    .reduce((s, i) => s + i.quantity, 0);
+  return db.serialUnits.filter(s => s.productId === productId && (!warehouseIds || warehouseIds.includes(s.warehouseId))).length;
+}
+// 只回傳有序號的在庫單位（供勾選出庫用）
+function activeSerialsOf(productId, warehouseId) {
+  return db.serialUnits.filter(s => s.productId === productId && s.warehouseId === warehouseId && s.serialNo);
+}
+// 無序號的在庫數量
+function nonSerialStockOf(productId, warehouseId) {
+  return db.serialUnits.filter(s => s.productId === productId && s.warehouseId === warehouseId && !s.serialNo).length;
+}
+function serialExistsAnywhere(serialNo) {
+  return db.serialUnits.some(s => s.serialNo === serialNo);
 }
 
-function applyMovement(productId, warehouseId, delta, type, serialNo, note, operatorId) {
-  let rec = db.inventory.find(i => i.productId === productId && i.warehouseId === warehouseId);
-  if (!rec) { rec = { productId, warehouseId, quantity: 0 }; db.inventory.push(rec); }
-  rec.quantity += delta;
+// 有序號：一筆異動對應一台（qty 固定為 1）；無序號：一筆異動對應 qty 台，一起記錄數量
+function applyMovement(productId, warehouseId, type, serialNo, qty, note, operatorId) {
+  const timestamp = new Date().toLocaleString("zh-TW", { hour12: false });
+  const sign = type === "outbound" ? -1 : 1;
+  if (serialNo) {
+    if (type === "inbound") {
+      db.serialUnits.push({ id: "s" + Date.now() + Math.random().toString(36).slice(2, 6), productId, warehouseId, serialNo, inboundAt: timestamp });
+    } else {
+      const idx = db.serialUnits.findIndex(s => s.productId === productId && s.warehouseId === warehouseId && s.serialNo === serialNo);
+      if (idx !== -1) db.serialUnits.splice(idx, 1);
+    }
+  } else if (type === "inbound") {
+    for (let i = 0; i < qty; i++) {
+      db.serialUnits.push({ id: "s" + Date.now() + Math.random().toString(36).slice(2, 6) + i, productId, warehouseId, serialNo: null, inboundAt: timestamp });
+    }
+  } else {
+    let remaining = qty;
+    for (let i = db.serialUnits.length - 1; i >= 0 && remaining > 0; i--) {
+      const s = db.serialUnits[i];
+      if (s.productId === productId && s.warehouseId === warehouseId && !s.serialNo) {
+        db.serialUnits.splice(i, 1);
+        remaining--;
+      }
+    }
+  }
   db.movements.unshift({
     id: "m" + Date.now() + Math.random().toString(36).slice(2, 6),
-    productId, warehouseId, delta, type, serialNo, note, operatorId,
-    timestamp: new Date().toLocaleString("zh-TW", { hour12: false }),
+    productId, warehouseId, delta: sign * qty, type, serialNo: serialNo || null, note, operatorId,
+    timestamp,
   });
 }
 
@@ -134,6 +165,7 @@ function bindLogin() {
 // ---- 主版型 ----
 function renderLayout() {
   const u = currentUser();
+  if (view.page === "move-in" || view.page === "move-out") moveMenuOpen = true;
   return `
   <div class="min-h-screen flex">
     <aside class="w-56 bg-slate-800 text-slate-100 flex flex-col">
@@ -145,7 +177,16 @@ function renderLayout() {
         <button data-nav="home" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">🏠 總覽</button>
         <button data-nav="inventory" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">📦 庫存總覽</button>
         <button data-nav="movements" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">📜 異動紀錄</button>
-        ${u.role === "admin" ? `<button data-nav="move" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">＋ 異動</button>` : ""}
+        ${u.role === "admin" ? `
+        <div>
+          <button id="move-toggle-btn" class="w-full text-left px-3 py-2 rounded hover:bg-slate-700 flex items-center justify-between">
+            <span>＋ 異動</span><span class="text-xs">${moveMenuOpen ? "▾" : "▸"}</span>
+          </button>
+          ${moveMenuOpen ? `
+            <button data-nav="move-in" class="nav-btn w-full text-left pl-8 pr-3 py-2 rounded hover:bg-slate-700 ${view.page === "move-in" ? "bg-slate-700" : ""}">📥 入庫</button>
+            <button data-nav="move-out" class="nav-btn w-full text-left pl-8 pr-3 py-2 rounded hover:bg-slate-700 ${view.page === "move-out" ? "bg-slate-700" : ""}">📤 出庫</button>
+          ` : ""}
+        </div>` : ""}
         ${u.role === "admin" ? `<button data-nav="products" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">🏷 料號管理</button>` : ""}
         ${u.role === "admin" ? `<button data-nav="admin" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">⚙ 管理後台</button>` : ""}
         <button data-nav="help" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">📖 操作說明</button>
@@ -163,7 +204,8 @@ function renderPage() {
     case "home": return renderHome();
     case "inventory": return renderInventory();
     case "movements": return renderMovements();
-    case "move": return renderMoveForm();
+    case "move-in": return renderMoveForm("inbound");
+    case "move-out": return renderMoveForm("outbound");
     case "products": return renderProducts();
     case "admin": return renderAdmin();
     case "help": return renderHelpContent();
@@ -233,14 +275,14 @@ function bindHome() {
   document.querySelectorAll(".delete-warehouse-btn").forEach(btn => {
     btn.onclick = () => {
       const id = btn.dataset.deleteWarehouse;
-      const hasStock = db.inventory.some(i => i.warehouseId === id && i.quantity > 0);
+      const hasStock = db.serialUnits.some(s => s.warehouseId === id);
       if (hasStock) {
         alert("此倉庫尚有庫存（庫存不為 0），無法刪除，請先將庫存異動清空");
         return;
       }
       if (!confirm(`確定要刪除「${warehouseName(id)}」嗎？`)) return;
       db.warehouses = db.warehouses.filter(w => w.id !== id);
-      db.inventory = db.inventory.filter(i => i.warehouseId !== id);
+      db.serialUnits = db.serialUnits.filter(s => s.warehouseId !== id);
       saveDB(db);
       render();
     };
@@ -252,10 +294,13 @@ function renderInventory() {
   const u = currentUser();
   const whIds = u.role === "admin" ? db.warehouses.map(w => w.id) : warehouseIdsOfClient(u.clientId);
 
-  const rows = [];
-  db.inventory.filter(i => i.quantity > 0 && whIds.includes(i.warehouseId)).forEach(i => {
-    rows.push({ product: db.products.find(p => p.id === i.productId), warehouseId: i.warehouseId, qty: i.quantity });
+  const groups = {};
+  db.serialUnits.filter(s => whIds.includes(s.warehouseId)).forEach(s => {
+    const key = s.productId + "|" + s.warehouseId;
+    if (!groups[key]) groups[key] = { product: db.products.find(p => p.id === s.productId), warehouseId: s.warehouseId, qty: 0 };
+    groups[key].qty++;
   });
+  const rows = Object.values(groups);
 
   return `
   <h2 class="text-lg font-bold text-slate-800 mb-4">庫存總覽</h2>
@@ -322,18 +367,40 @@ function renderMovements() {
 // ---- 異動（管理員：即時入庫/出庫，需輸入序號） ----
 let draftClientId = db.clients[0]?.id;
 let draftWarehouseId = warehousesOfClient(draftClientId)[0]?.id;
-let draftItems = [{ productId: db.products[0]?.id, qty: 1, serialNo: "" }];
+let draftItems = [];
+let draftMoveType = null;
 
-function resetDraftForClient(clientId) {
-  draftClientId = clientId;
-  draftWarehouseId = warehousesOfClient(clientId)[0]?.id;
-  draftItems = [{ productId: db.products[0]?.id, qty: 1, serialNo: "" }];
+function defaultDraftItem(type) {
+  if (type === "outbound") {
+    const avail = db.products.find(p => stockOf(p.id, draftWarehouseId) > 0);
+    return { productId: avail?.id || "", serials: [], qty: 0 };
+  }
+  return { productId: "", serials: [], noSerial: false, qty: 1 };
 }
 
-function renderMoveForm() {
+function resetDraftForClient(clientId, type) {
+  draftClientId = clientId;
+  draftWarehouseId = warehousesOfClient(clientId)[0]?.id;
+  draftItems = [defaultDraftItem(type)];
+}
+
+function findProductBySkuText(text) {
+  const t = text.trim();
+  return db.products.find(p => p.sku === t);
+}
+
+function renderMoveForm(type) {
+  if (draftMoveType !== type) {
+    draftMoveType = type;
+    draftItems = [defaultDraftItem(type)];
+  }
+  const isOutbound = type === "outbound";
   const clientWarehouses = warehousesOfClient(draftClientId);
+  const stockedProducts = isOutbound ? db.products.filter(p => stockOf(p.id, draftWarehouseId) > 0) : [];
+  const canAddItems = !isOutbound || stockedProducts.length > 0;
+
   return `
-  <h2 class="text-lg font-bold text-slate-800 mb-4">異動（即時入庫 / 出庫）</h2>
+  <h2 class="text-lg font-bold text-slate-800 mb-4">${isOutbound ? "出庫" : "入庫"}（即時異動）</h2>
   <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl space-y-4">
     <div class="grid grid-cols-2 gap-4">
       <div>
@@ -349,39 +416,92 @@ function renderMoveForm() {
         </select>
       </div>
     </div>
-    <div class="grid grid-cols-2 gap-4">
-      <div>
-        <label class="text-xs text-slate-500">異動類型</label>
-        <select id="move-type" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
-          <option value="inbound">入庫</option>
-          <option value="outbound">出庫</option>
-        </select>
-      </div>
-      <div>
-        <label class="text-xs text-slate-500">備註</label>
-        <input id="move-note" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="選填"/>
-      </div>
+    <div>
+      <label class="text-xs text-slate-500">備註</label>
+      <input id="move-note" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="選填"/>
     </div>
 
     <div>
       <div class="flex items-center justify-between mb-2">
-        <label class="text-xs text-slate-500">品項明細（序號為必填）</label>
-        <button id="add-item-btn" class="text-xs text-blue-600 hover:underline">＋ 新增品項</button>
+        <label class="text-xs text-slate-500">品項明細（有序號的料號請逐台輸入序號；無序號的料號請勾選「無序號」改用數量）</label>
+        ${canAddItems ? `<button id="add-item-btn" class="text-xs text-blue-600 hover:underline">＋ 新增品項</button>` : ""}
       </div>
-      <div id="items-list" class="space-y-2">
-        ${draftItems.map((it, idx) => `
-          <div class="flex gap-2 items-center item-row" data-idx="${idx}">
-            <select class="item-product border rounded-lg px-2 py-1.5 text-sm flex-1">
-              ${db.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? "selected" : ""}>${p.sku}－${p.name}</option>`).join("")}
-            </select>
-            <input type="number" min="1" value="${it.qty}" class="item-qty border rounded-lg px-2 py-1.5 text-sm w-20" placeholder="數量"/>
-            <input type="text" value="${it.serialNo}" class="item-serial border rounded-lg px-2 py-1.5 text-sm w-36" placeholder="序號（必填）"/>
-            <button class="remove-item text-rose-500 text-xs px-2">✕</button>
-          </div>`).join("")}
+      ${!canAddItems ? `
+        <p class="text-xs text-slate-400 border rounded-lg p-3">此倉庫目前沒有庫存商品可供出庫</p>
+      ` : `
+      <div id="items-list" class="space-y-3">
+        ${draftItems.map((it, idx) => {
+          const activeSerials = isOutbound ? activeSerialsOf(it.productId, draftWarehouseId) : [];
+          const nonSerialAvail = isOutbound ? nonSerialStockOf(it.productId, draftWarehouseId) : 0;
+          return `
+          <div class="border rounded-lg p-3 space-y-2 item-row" data-idx="${idx}">
+            <div class="flex gap-2 items-center">
+              ${isOutbound ? `
+                <select class="item-product border rounded-lg px-2 py-1.5 text-sm flex-1">
+                  ${stockedProducts.map(p => `<option value="${p.id}" ${p.id === it.productId ? "selected" : ""}>${p.sku}－${p.name}（庫存 ${stockOf(p.id, draftWarehouseId)} ${p.unit}）</option>`).join("")}
+                </select>
+              ` : `
+                <input type="text" list="product-datalist" value="${productSkuOf(it.productId)}" class="item-product-input border rounded-lg px-2 py-1.5 text-sm flex-1" placeholder="輸入或選擇料號"/>
+                <label class="flex items-center gap-1 text-xs text-slate-500 whitespace-nowrap">
+                  <input type="checkbox" class="no-serial-toggle" ${it.noSerial ? "checked" : ""}/> 無序號
+                </label>
+              `}
+              <button class="remove-item text-rose-500 text-xs px-2 whitespace-nowrap">✕ 移除品項</button>
+            </div>
+            ${isOutbound ? `
+              ${activeSerials.length ? `
+                <div>
+                  <label class="text-xs text-slate-500">勾選要出庫的序號</label>
+                  <div class="grid grid-cols-2 gap-1 mt-1 max-h-32 overflow-auto border rounded-lg p-2">
+                    ${activeSerials.map(s => `
+                      <label class="flex items-center gap-1 text-xs">
+                        <input type="checkbox" class="serial-checkbox" value="${s.serialNo}" ${it.serials.includes(s.serialNo) ? "checked" : ""}/>
+                        <span class="truncate">${s.serialNo}</span>
+                      </label>`).join("")}
+                  </div>
+                  <p class="text-xs text-slate-400 mt-1">已選 ${it.serials.length} 台</p>
+                </div>
+              ` : ""}
+              ${nonSerialAvail > 0 ? `
+                <div>
+                  <label class="text-xs text-slate-500">無序號庫存（現有 ${nonSerialAvail} 個）</label>
+                  <input type="number" min="0" max="${nonSerialAvail}" value="${it.qty || 0}" class="item-qty border rounded-lg px-2 py-1.5 text-sm w-32 mt-1" placeholder="出庫數量"/>
+                </div>
+              ` : ""}
+              ${!activeSerials.length && !nonSerialAvail ? `<p class="text-xs text-slate-400">此商品在此倉庫無可用庫存</p>` : ""}
+            ` : it.noSerial ? `
+              <div>
+                <label class="text-xs text-slate-500">數量</label>
+                <input type="number" min="1" value="${it.qty}" class="item-qty border rounded-lg px-2 py-1.5 text-sm w-32 mt-1" placeholder="數量"/>
+              </div>
+            ` : `
+              <div>
+                <label class="text-xs text-slate-500">序號</label>
+                <div class="flex gap-2 mt-1">
+                  <input type="text" class="serial-input border rounded-lg px-2 py-1.5 text-sm flex-1" placeholder="輸入序號後按 Enter 或點新增"/>
+                  <button class="add-serial-btn border rounded-lg px-3 py-1.5 text-xs hover:bg-slate-100 whitespace-nowrap">＋ 新增序號</button>
+                </div>
+                <div class="flex flex-wrap gap-1 mt-2">
+                  ${it.serials.map((sn, sidx) => `
+                    <span class="inline-flex items-center gap-1 bg-slate-100 rounded-full px-2 py-1 text-xs">
+                      ${sn}<button class="remove-serial-btn text-rose-500" data-sidx="${sidx}">✕</button>
+                    </span>`).join("") || `<span class="text-xs text-slate-400">尚未輸入序號</span>`}
+                </div>
+                <p class="text-xs text-slate-400 mt-1">共 ${it.serials.length} 台</p>
+              </div>
+            `}
+          </div>`;
+        }).join("")}
       </div>
+      ${!isOutbound ? `
+        <datalist id="product-datalist">
+          ${db.products.map(p => `<option value="${p.sku}">${p.name}</option>`).join("")}
+        </datalist>
+      ` : ""}
+      `}
     </div>
 
-    <button id="submit-move-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">送出異動（立即生效）</button>
+    <button id="submit-move-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700" ${canAddItems ? "" : "disabled"}>送出${isOutbound ? "出庫" : "入庫"}（立即生效）</button>
     <p id="move-msg" class="text-xs hidden"></p>
   </div>`;
 }
@@ -545,10 +665,15 @@ function bindLayout() {
   document.querySelectorAll(".nav-btn").forEach(btn => {
     btn.onclick = () => { view.page = btn.dataset.nav; render(); };
   });
+  document.getElementById("move-toggle-btn")?.addEventListener("click", () => {
+    moveMenuOpen = !moveMenuOpen;
+    render();
+  });
 
   if (view.page === "home") bindHome();
   if (view.page === "movements") bindMovements();
-  if (view.page === "move") bindMoveForm();
+  if (view.page === "move-in") bindMoveForm("inbound");
+  if (view.page === "move-out") bindMoveForm("outbound");
   if (view.page === "products") bindProducts();
   if (view.page === "admin") bindAdmin();
 }
@@ -563,59 +688,169 @@ function showMsg(id, text, isError) {
   el.className = `text-xs ${isError ? "text-rose-600" : "text-emerald-600"}`;
 }
 
-function bindMoveForm() {
+function bindMoveForm(type) {
+  const isOutbound = type === "outbound";
+
   document.getElementById("move-client").onchange = (e) => {
-    resetDraftForClient(e.target.value);
+    resetDraftForClient(e.target.value, type);
     render();
   };
   document.getElementById("move-warehouse").onchange = (e) => {
     draftWarehouseId = e.target.value;
+    draftItems = [defaultDraftItem(type)];
     render();
   };
-  document.getElementById("add-item-btn").onclick = () => {
-    draftItems.push({ productId: db.products[0]?.id, qty: 1, serialNo: "" });
+  document.getElementById("add-item-btn")?.addEventListener("click", () => {
+    draftItems.push(defaultDraftItem(type));
     render();
-  };
+  });
   document.querySelectorAll(".remove-item").forEach(btn => {
     btn.onclick = () => {
       const idx = +btn.closest(".item-row").dataset.idx;
       draftItems.splice(idx, 1);
-      if (draftItems.length === 0) draftItems.push({ productId: db.products[0]?.id, qty: 1, serialNo: "" });
+      if (draftItems.length === 0) draftItems.push(defaultDraftItem(type));
       render();
     };
   });
 
-  document.getElementById("submit-move-btn").onclick = () => {
-    const type = document.getElementById("move-type").value;
+  if (isOutbound) {
+    document.querySelectorAll(".item-product").forEach(sel => {
+      sel.onchange = (e) => {
+        const idx = +e.target.closest(".item-row").dataset.idx;
+        draftItems[idx].productId = e.target.value;
+        draftItems[idx].serials = [];
+        render();
+      };
+    });
+    document.querySelectorAll(".serial-checkbox").forEach(cb => {
+      cb.onchange = (e) => {
+        const idx = +e.target.closest(".item-row").dataset.idx;
+        const sn = e.target.value;
+        if (e.target.checked) {
+          if (!draftItems[idx].serials.includes(sn)) draftItems[idx].serials.push(sn);
+        } else {
+          draftItems[idx].serials = draftItems[idx].serials.filter(s => s !== sn);
+        }
+        render();
+      };
+    });
+  } else {
+    document.querySelectorAll(".item-product-input").forEach(inp => {
+      inp.addEventListener("input", (e) => {
+        const idx = +e.target.closest(".item-row").dataset.idx;
+        const product = findProductBySkuText(e.target.value);
+        draftItems[idx].productId = product?.id || "";
+      });
+    });
+    document.querySelectorAll(".no-serial-toggle").forEach(cb => {
+      cb.onchange = (e) => {
+        const idx = +e.target.closest(".item-row").dataset.idx;
+        draftItems[idx].noSerial = e.target.checked;
+        draftItems[idx].serials = [];
+        draftItems[idx].qty = 1;
+        render();
+      };
+    });
+    document.querySelectorAll(".item-row").forEach(row => {
+      const idx = +row.dataset.idx;
+      const input = row.querySelector(".serial-input");
+      const addSerial = () => {
+        const val = input.value.trim();
+        if (!val) return;
+        if (draftItems[idx].serials.includes(val)) { showMsg("move-msg", `序號重複：${val}`, true); return; }
+        draftItems[idx].serials.push(val);
+        render();
+      };
+      row.querySelector(".add-serial-btn")?.addEventListener("click", addSerial);
+      input?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); addSerial(); }
+      });
+    });
+    document.querySelectorAll(".remove-serial-btn").forEach(btn => {
+      btn.onclick = () => {
+        const idx = +btn.closest(".item-row").dataset.idx;
+        const sidx = +btn.dataset.sidx;
+        draftItems[idx].serials.splice(sidx, 1);
+        render();
+      };
+    });
+  }
+
+  document.getElementById("submit-move-btn")?.addEventListener("click", () => {
     const note = document.getElementById("move-note").value.trim();
-    const items = [...document.querySelectorAll(".item-row")].map(row => ({
-      productId: row.querySelector(".item-product").value,
-      qty: Math.max(1, +row.querySelector(".item-qty").value || 1),
-      serialNo: row.querySelector(".item-serial").value.trim(),
-    }));
+    const rows = [...document.querySelectorAll(".item-row")];
+    const items = [];
+    for (const row of rows) {
+      const idx = +row.dataset.idx;
+      let productId;
+      if (isOutbound) {
+        productId = draftItems[idx].productId;
+      } else {
+        const text = row.querySelector(".item-product-input").value;
+        const product = findProductBySkuText(text);
+        if (!product) { showMsg("move-msg", `找不到料號：${text}`, true); return; }
+        productId = product.id;
+      }
 
-    if (items.some(it => !it.serialNo)) { showMsg("move-msg", "每個品項都必須填寫序號", true); return; }
+      if (!isOutbound && draftItems[idx].noSerial) {
+        const qty = Math.max(1, +row.querySelector(".item-qty").value || 1);
+        items.push({ productId, serials: [], qty });
+        continue;
+      }
 
-    if (type === "outbound") {
-      for (const it of items) {
-        const avail = stockOf(it.productId, draftWarehouseId);
-        if (it.qty > avail) {
-          showMsg("move-msg", `庫存不足：${productName(it.productId)} 於 ${warehouseName(draftWarehouseId)} 僅剩 ${avail} ${productUnit(it.productId)}`, true);
+      if (isOutbound) {
+        const serials = draftItems[idx].serials;
+        const qtyInput = row.querySelector(".item-qty");
+        const qty = qtyInput ? Math.max(0, +qtyInput.value || 0) : 0;
+        if (serials.length === 0 && qty === 0) {
+          showMsg("move-msg", `請勾選序號或輸入無序號出庫數量：${productName(productId)}`, true);
           return;
         }
+        const nonSerialAvail = nonSerialStockOf(productId, draftWarehouseId);
+        if (qty > nonSerialAvail) {
+          showMsg("move-msg", `無序號庫存不足：${productName(productId)} 僅剩 ${nonSerialAvail} 個`, true);
+          return;
+        }
+        items.push({ productId, serials, qty });
+        continue;
       }
+
+      const serials = draftItems[idx].serials;
+      if (serials.length === 0) {
+        showMsg("move-msg", `請輸入至少一個序號：${productName(productId)}`, true);
+        return;
+      }
+      items.push({ productId, serials, qty: 0 });
+    }
+
+    if (!isOutbound) {
+      for (const it of items) {
+        for (const sn of it.serials) {
+          if (serialExistsAnywhere(sn)) {
+            showMsg("move-msg", `序號已存在於庫存中，無法重複入庫：${sn}`, true);
+            return;
+          }
+        }
+      }
+      const allSerials = items.flatMap(it => it.serials);
+      const dup = allSerials.find((sn, i) => allSerials.indexOf(sn) !== i);
+      if (dup) { showMsg("move-msg", `本次輸入的序號重複：${dup}`, true); return; }
     }
 
     const u = currentUser();
-    const sign = type === "outbound" ? -1 : 1;
     items.forEach(it => {
-      applyMovement(it.productId, draftWarehouseId, sign * it.qty, type, it.serialNo, note, u.id);
+      it.serials.forEach(sn => {
+        applyMovement(it.productId, draftWarehouseId, type, sn, 1, note, u.id);
+      });
+      if (it.qty > 0) {
+        applyMovement(it.productId, draftWarehouseId, type, null, it.qty, note, u.id);
+      }
     });
     saveDB(db);
-    resetDraftForClient(draftClientId);
+    resetDraftForClient(draftClientId, type);
     view.page = "movements";
     render();
-  };
+  });
 }
 
 function bindProducts() {
@@ -635,7 +870,7 @@ function bindProducts() {
   document.querySelectorAll(".delete-product-btn").forEach(btn => {
     btn.onclick = () => {
       const id = btn.dataset.deleteProduct;
-      if (db.inventory.some(i => i.productId === id && i.quantity > 0)) {
+      if (db.serialUnits.some(s => s.productId === id)) {
         alert("此料號尚有庫存，無法刪除");
         return;
       }
@@ -664,6 +899,7 @@ function bindAdmin() {
       try {
         const parsed = JSON.parse(reader.result);
         if (!parsed.users || !parsed.clients || !parsed.products) throw new Error("格式不符");
+        if (!parsed.serialUnits) parsed.serialUnits = [];
         db = parsed;
         saveDB(db);
         showMsg("backup-msg", "匯入成功，資料已還原");

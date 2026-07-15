@@ -1,5 +1,5 @@
 // ---- 假資料庫 (localStorage 模擬後端) ----
-const STORAGE_KEY = "warehouse_demo_db_v8";
+const STORAGE_KEY = "warehouse_demo_db_v9";
 
 const DEFAULT_DB = {
   users: [
@@ -53,9 +53,9 @@ const DEFAULT_DB = {
     { id: "p12", sku: "3M44990F001A", name: "TRIO-20.0-TL-OUTD-S2X-400;BRAND FIMER", unit: "個", safetyStock: 0 },
     { id: "p13", sku: "3M44990F201A", name: "TRIO-20.0-TL-OUTD-400;BRAND FIMER", unit: "個", safetyStock: 0 },
   ],
-  // 庫存直接以「商品 + 倉庫」為單位管理，不再細分儲位/架位
-  inventory: [],
-  // 異動紀錄：每一筆入庫/出庫都會即時反映到庫存，並在此留下紀錄（含序號）
+  // 庫存以「逐台序號」追蹤：每一台在庫的實體都是一筆記錄，序號全域唯一
+  serialUnits: [],
+  // 異動紀錄：每一筆入庫/出庫都是單一序號的異動，並記錄時間
   movements: [],
 };
 
@@ -65,7 +65,9 @@ function loadDB() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_DB));
     return JSON.parse(JSON.stringify(DEFAULT_DB));
   }
-  return JSON.parse(raw);
+  const parsed = JSON.parse(raw);
+  if (!parsed.serialUnits) parsed.serialUnits = [];
+  return parsed;
 }
 
 function saveDB(db) {
