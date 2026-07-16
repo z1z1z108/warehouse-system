@@ -416,9 +416,12 @@ function resetDraftForClient(clientId, type) {
   draftItems = [defaultDraftItem(type)];
 }
 
-function findProductBySkuText(text) {
+function findProductBySkuText(text, clientId) {
   const t = text.trim();
-  return db.products.find(p => p.sku === t);
+  return db.products.find(p => p.sku === t && (!clientId || p.clientId === clientId));
+}
+function productsOfClient(clientId) {
+  return db.products.filter(p => p.clientId === clientId);
 }
 
 function renderMoveForm(type) {
@@ -527,7 +530,7 @@ function renderMoveForm(type) {
       </div>
       ${!isOutbound ? `
         <datalist id="product-datalist">
-          ${db.products.map(p => `<option value="${p.sku}">${p.name}</option>`).join("")}
+          ${productsOfClient(draftClientId).map(p => `<option value="${p.sku}">${p.name}</option>`).join("")}
         </datalist>
       ` : ""}
       `}
@@ -751,41 +754,54 @@ function renderProducts() {
     <p class="font-semibold text-sm text-slate-700 mb-3">新增料號</p>
     <div class="grid grid-cols-2 gap-3 mb-3">
       <div>
+        <label class="text-xs text-slate-500">所屬客戶</label>
+        <select id="new-client" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
+          ${db.clients.map(c => `<option value="${c.id}">${c.name}</option>`).join("")}
+        </select>
+      </div>
+      <div>
         <label class="text-xs text-slate-500">Material（料號）</label>
         <input id="new-sku" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="例：3AUA0000064885"/>
       </div>
+    </div>
+    <div class="grid grid-cols-2 gap-3 mb-3">
       <div>
         <label class="text-xs text-slate-500">單位</label>
         <input id="new-unit" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="例：個 / 台 / 片" value="個"/>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">安全庫存</label>
+        <input id="new-safety" type="number" min="0" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="0"/>
       </div>
     </div>
     <div class="mb-3">
       <label class="text-xs text-slate-500">Material description（料號說明）</label>
       <input id="new-desc" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="例：REV.K;CONTROL PANEL; ACS-AP-I MODULE"/>
     </div>
-    <div class="mb-3">
-      <label class="text-xs text-slate-500">安全庫存</label>
-      <input id="new-safety" type="number" min="0" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="0"/>
-    </div>
     <button id="add-product-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">新增料號</button>
     <p id="product-msg" class="text-xs hidden mt-2"></p>
   </div>
 
+  <div class="flex items-center justify-between mb-2">
+    <p class="text-sm text-slate-500">共 ${db.products.length} 個料號</p>
+    <button id="export-products-btn" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">📊 匯出料號 CSV</button>
+  </div>
   <div class="bg-white rounded-xl shadow-sm overflow-hidden">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
-        <tr><th class="px-4 py-2">Material</th><th class="px-4 py-2">Material description</th><th class="px-4 py-2">單位</th><th class="px-4 py-2">安全庫存</th><th class="px-4 py-2">總庫存</th><th class="px-4 py-2"></th></tr>
+        <tr><th class="px-4 py-2">所屬客戶</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">Material description</th><th class="px-4 py-2">單位</th><th class="px-4 py-2">安全庫存</th><th class="px-4 py-2">總庫存</th><th class="px-4 py-2"></th></tr>
       </thead>
       <tbody>
         ${db.products.map(p => `
           <tr class="border-t hover:bg-slate-50">
+            <td class="px-4 py-2">${clientName(p.clientId)}</td>
             <td class="px-4 py-2 font-mono text-xs">${p.sku}</td>
             <td class="px-4 py-2">${p.name}</td>
             <td class="px-4 py-2">${p.unit}</td>
             <td class="px-4 py-2">${p.safetyStock}</td>
             <td class="px-4 py-2 font-semibold">${totalStock(p.id)}</td>
             <td class="px-4 py-2 text-right"><button data-delete-product="${p.id}" class="delete-product-btn text-rose-500 hover:underline text-xs">刪除</button></td>
-          </tr>`).join("") || `<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">尚無料號</td></tr>`}
+          </tr>`).join("") || `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">尚無料號</td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -994,7 +1010,7 @@ function bindMoveForm(type) {
     document.querySelectorAll(".item-product-input").forEach(inp => {
       inp.addEventListener("input", (e) => {
         const idx = +e.target.closest(".item-row").dataset.idx;
-        const product = findProductBySkuText(e.target.value);
+        const product = findProductBySkuText(e.target.value, draftClientId);
         draftItems[idx].productId = product?.id || "";
       });
     });
@@ -1048,8 +1064,8 @@ function bindMoveForm(type) {
         productId = draftItems[idx].productId;
       } else {
         const text = row.querySelector(".item-product-input").value;
-        const product = findProductBySkuText(text);
-        if (!product) { showMsg("move-msg", `找不到料號：${text}`, true); return; }
+        const product = findProductBySkuText(text, draftClientId);
+        if (!product) { showMsg("move-msg", `找不到屬於「${clientName(draftClientId)}」的料號：${text}`, true); return; }
         productId = product.id;
       }
 
@@ -1116,6 +1132,7 @@ function bindMoveForm(type) {
 
 function bindProducts() {
   document.getElementById("add-product-btn").onclick = () => {
+    const clientId = document.getElementById("new-client").value;
     const sku = document.getElementById("new-sku").value.trim();
     const desc = document.getElementById("new-desc").value.trim();
     const unit = document.getElementById("new-unit").value.trim() || "個";
@@ -1124,7 +1141,7 @@ function bindProducts() {
     if (!sku || !desc) { showMsg("product-msg", "請填寫料號與說明", true); return; }
     if (db.products.some(p => p.sku === sku)) { showMsg("product-msg", "此料號已存在", true); return; }
 
-    db.products.push({ id: "p" + Date.now(), sku, name: desc, unit, safetyStock });
+    db.products.push({ id: "p" + Date.now(), sku, name: desc, unit, safetyStock, clientId });
     saveDB(db);
     render();
   };
@@ -1140,6 +1157,18 @@ function bindProducts() {
       render();
     };
   });
+  document.getElementById("export-products-btn").onclick = exportProductsCSV;
+}
+
+function exportProductsCSV() {
+  const rows = [["所屬客戶", "Material", "Material description", "單位", "安全庫存", "總庫存"]];
+  db.products.forEach(p => rows.push([clientName(p.clientId), p.sku, p.name, p.unit, p.safetyStock, totalStock(p.id)]));
+  const csv = "﻿" + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `料號清單_${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
 }
 
 function bindAdmin() {

@@ -38,20 +38,32 @@ const DEFAULT_DB = {
     { id: "w14", clientId: "c5", name: "ZH-倉庫4" },
     { id: "w15", clientId: "c5", name: "ZH-倉庫5" },
   ],
+  // 每個料號都歸屬於一個客戶（clientId）
   products: [
-    { id: "p1", sku: "3AUA0000064885", name: "REV.K;CONTROL PANEL; ACS-AP-I MODULE; UN", unit: "個", safetyStock: 0 },
-    { id: "p2", sku: "3AUA0000089109", name: "REV.Q;FENA-21; FENA-21; ETHERNET; ASSEMB", unit: "個", safetyStock: 0 },
-    { id: "p3", sku: "3AUA0000110430", name: "REV.K;CONTROL UNIT; BCU-12; 7_CH; ASSEMB", unit: "個", safetyStock: 0 },
-    { id: "p4", sku: "3AXD50000006010", name: "REV.A;MEMORY UNIT KIT; ZMU-02; .; ASSEMB", unit: "個", safetyStock: 0 },
-    { id: "p5", sku: "3AXD50000022178", name: "REV.A;PLATE,STEEL;AC CABLE LEAD THROUGH;", unit: "個", safetyStock: 0 },
-    { id: "p6", sku: "3AXD50000030914", name: "REV.A;PLATE,STAINLESS STEEL;AUX POWER LE", unit: "個", safetyStock: 0 },
-    { id: "p7", sku: "3AXD50000030915", name: "REV.A;PLATE,STAINLESS STEEL;SIGNAL LEAD-", unit: "個", safetyStock: 0 },
-    { id: "p8", sku: "3AXD50000031182", name: "REV.A;LEAD THROUGH ; SCG 2X3-35 SPLITTIN", unit: "個", safetyStock: 0 },
-    { id: "p9", sku: "3AXD50000031183", name: "REV.A;LEAD THROUGH ; SCG 1X3-35 SPLITTIN", unit: "個", safetyStock: 0 },
-    { id: "p10", sku: "3AXD50000036531", name: "REV.B;ASSEMBLY KIT ; POWER MODULE LIFTIN", unit: "個", safetyStock: 0 },
-    { id: "p11", sku: "3AYN2073000-604", name: "POWER MODULE; IEC; PVS980-104SC-925A-7;6", unit: "個", safetyStock: 0 },
-    { id: "p12", sku: "3M44990F001A", name: "TRIO-20.0-TL-OUTD-S2X-400;BRAND FIMER", unit: "個", safetyStock: 0 },
-    { id: "p13", sku: "3M44990F201A", name: "TRIO-20.0-TL-OUTD-400;BRAND FIMER", unit: "個", safetyStock: 0 },
+    { id: "p1", sku: "3AUA0000064885", name: "REV.K;CONTROL PANEL; ACS-AP-I MODULE; UN", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p2", sku: "3AUA0000089109", name: "REV.Q;FENA-21; FENA-21; ETHERNET; ASSEMB", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p3", sku: "3AUA0000110430", name: "REV.K;CONTROL UNIT; BCU-12; 7_CH; ASSEMB", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p4", sku: "3AXD50000006010", name: "REV.A;MEMORY UNIT KIT; ZMU-02; .; ASSEMB", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p5", sku: "3AXD50000022178", name: "REV.A;PLATE,STEEL;AC CABLE LEAD THROUGH;", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p6", sku: "3AXD50000030914", name: "REV.A;PLATE,STAINLESS STEEL;AUX POWER LE", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p7", sku: "3AXD50000030915", name: "REV.A;PLATE,STAINLESS STEEL;SIGNAL LEAD-", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p8", sku: "3AXD50000031182", name: "REV.A;LEAD THROUGH ; SCG 2X3-35 SPLITTIN", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p9", sku: "3AXD50000031183", name: "REV.A;LEAD THROUGH ; SCG 1X3-35 SPLITTIN", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p10", sku: "3AXD50000036531", name: "REV.B;ASSEMBLY KIT ; POWER MODULE LIFTIN", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p11", sku: "3AYN2073000-604", name: "POWER MODULE; IEC; PVS980-104SC-925A-7;6", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p12", sku: "3M44990F001A", name: "TRIO-20.0-TL-OUTD-S2X-400;BRAND FIMER", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p13", sku: "3M44990F201A", name: "TRIO-20.0-TL-OUTD-400;BRAND FIMER", unit: "個", safetyStock: 0, clientId: "c2" },
+    // 台灣所樂能源(SLE)
+    { id: "p14", sku: "SE10000H-RWSKBF57", name: "SE10000H-RWSKBF57", unit: "個", safetyStock: 0, clientId: "c3" },
+    { id: "p15", sku: "SE100K-RW00IBNC4", name: "SE100K-RW00IBNC4", unit: "個", safetyStock: 0, clientId: "c3" },
+    { id: "p16", sku: "SE100K-RW00IBNE4", name: "SE100K-RW00IBNE4", unit: "個", safetyStock: 0, clientId: "c3" },
+    { id: "p17", sku: "SE100K-RW00IBNK4", name: "SE100K-RW00IBNK4", unit: "個", safetyStock: 0, clientId: "c3" },
+    // 亞源科技(APD)
+    { id: "p18", sku: "PV-30000S-U", name: "PV-30000S-U", unit: "個", safetyStock: 0, clientId: "c1" },
+    { id: "p19", sku: "PV-5000M-V", name: "PV-5000M-V", unit: "個", safetyStock: 0, clientId: "c1" },
+    { id: "p20", sku: "PV-75000T-U", name: "PV-75000T-U", unit: "個", safetyStock: 0, clientId: "c1" },
+    { id: "p21", sku: "PV-60000T-U", name: "PV-60000T-U", unit: "個", safetyStock: 0, clientId: "c1" },
+    { id: "p22", sku: "PV-5000-SHV", name: "PV-5000-SHV", unit: "個", safetyStock: 0, clientId: "c1" },
   ],
   // 庫存以「逐台序號」追蹤：每一台在庫的實體都是一筆記錄，序號全域唯一
   serialUnits: [],
@@ -67,6 +79,15 @@ function loadDB() {
   }
   const parsed = JSON.parse(raw);
   if (!parsed.serialUnits) parsed.serialUnits = [];
+  // 補上新增的預設料號（依 Material 料號比對，不覆蓋既有資料），並補上舊料號缺少的所屬客戶
+  DEFAULT_DB.products.forEach(defaultProduct => {
+    const existing = parsed.products.find(p => p.sku === defaultProduct.sku);
+    if (!existing) {
+      parsed.products.push({ ...defaultProduct });
+    } else if (!existing.clientId && defaultProduct.clientId) {
+      existing.clientId = defaultProduct.clientId;
+    }
+  });
   return parsed;
 }
 
