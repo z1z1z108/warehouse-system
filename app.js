@@ -5,6 +5,7 @@ let view = { page: "home" };
 let moveMenuOpen = false;
 
 const ROLE_LABEL = { admin: "管理員", client: "客戶" };
+const TYPE_LABEL = { inbound: "入庫", outbound: "出庫", transfer_out: "調撥(出)", transfer_in: "調撥(入)" };
 
 function currentUser() { return db.users.find(u => u.id === session?.userId); }
 
@@ -81,6 +82,35 @@ function applyMovement(productId, warehouseId, type, serialNo, qty, note, operat
     id: "m" + Date.now() + Math.random().toString(36).slice(2, 6),
     productId, warehouseId, delta: sign * qty, type, serialNo: serialNo || null, note, operatorId,
     timestamp,
+  });
+}
+
+// 調撥：把庫存從一個倉庫移到另一個倉庫（同一台序號單位只是換倉庫，不是先出後入兩台）
+function applyTransfer(productId, fromWarehouseId, toWarehouseId, serialNo, qty, note, operatorId) {
+  const timestamp = new Date().toLocaleString("zh-TW", { hour12: false });
+  if (serialNo) {
+    const unit = db.serialUnits.find(s => s.productId === productId && s.warehouseId === fromWarehouseId && s.serialNo === serialNo);
+    if (unit) unit.warehouseId = toWarehouseId;
+  } else {
+    let remaining = qty;
+    for (let i = db.serialUnits.length - 1; i >= 0 && remaining > 0; i--) {
+      const s = db.serialUnits[i];
+      if (s.productId === productId && s.warehouseId === fromWarehouseId && !s.serialNo) {
+        s.warehouseId = toWarehouseId;
+        remaining--;
+      }
+    }
+  }
+  const groupId = "t" + Date.now() + Math.random().toString(36).slice(2, 6);
+  const fromNote = `調撥至 ${warehouseName(toWarehouseId)}${note ? "；" + note : ""}`;
+  const toNote = `調撥自 ${warehouseName(fromWarehouseId)}${note ? "；" + note : ""}`;
+  db.movements.unshift({
+    id: "m" + Date.now() + Math.random().toString(36).slice(2, 6) + "a",
+    productId, warehouseId: fromWarehouseId, delta: -qty, type: "transfer_out", serialNo: serialNo || null, note: fromNote, operatorId, timestamp, transferGroupId: groupId,
+  });
+  db.movements.unshift({
+    id: "m" + Date.now() + Math.random().toString(36).slice(2, 6) + "b",
+    productId, warehouseId: toWarehouseId, delta: qty, type: "transfer_in", serialNo: serialNo || null, note: toNote, operatorId, timestamp, transferGroupId: groupId,
   });
 }
 
@@ -165,7 +195,7 @@ function bindLogin() {
 // ---- 主版型 ----
 function renderLayout() {
   const u = currentUser();
-  if (view.page === "move-in" || view.page === "move-out") moveMenuOpen = true;
+  if (view.page === "move-in" || view.page === "move-out" || view.page === "move-transfer") moveMenuOpen = true;
   return `
   <div class="min-h-screen flex">
     <aside class="w-56 bg-slate-800 text-slate-100 flex flex-col">
@@ -185,6 +215,7 @@ function renderLayout() {
           ${moveMenuOpen ? `
             <button data-nav="move-in" class="nav-btn w-full text-left pl-8 pr-3 py-2 rounded hover:bg-slate-700 ${view.page === "move-in" ? "bg-slate-700" : ""}">📥 入庫</button>
             <button data-nav="move-out" class="nav-btn w-full text-left pl-8 pr-3 py-2 rounded hover:bg-slate-700 ${view.page === "move-out" ? "bg-slate-700" : ""}">📤 出庫</button>
+            <button data-nav="move-transfer" class="nav-btn w-full text-left pl-8 pr-3 py-2 rounded hover:bg-slate-700 ${view.page === "move-transfer" ? "bg-slate-700" : ""}">🔀 調撥</button>
           ` : ""}
         </div>` : ""}
         ${u.role === "admin" ? `<button data-nav="products" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">🏷 料號管理</button>` : ""}
@@ -206,6 +237,7 @@ function renderPage() {
     case "movements": return renderMovements();
     case "move-in": return renderMoveForm("inbound");
     case "move-out": return renderMoveForm("outbound");
+    case "move-transfer": return renderTransferForm();
     case "products": return renderProducts();
     case "admin": return renderAdmin();
     case "help": return renderHelpContent();
@@ -352,7 +384,7 @@ function renderMovements() {
             <td class="px-4 py-2 text-xs text-slate-500">${m.timestamp}</td>
             ${u.role === "admin" ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(m.warehouseId))}</td>` : ""}
             <td class="px-4 py-2">${warehouseName(m.warehouseId)}</td>
-            <td class="px-4 py-2">${m.type === "inbound" ? "入庫" : "出庫"}</td>
+            <td class="px-4 py-2">${TYPE_LABEL[m.type] || m.type}</td>
             <td class="px-4 py-2">${productName(m.productId)}</td>
             <td class="px-4 py-2 font-mono text-xs">${m.serialNo || "-"}</td>
             <td class="px-4 py-2 font-semibold ${m.delta < 0 ? "text-rose-600" : "text-emerald-600"}">${m.delta > 0 ? "+" : ""}${m.delta}</td>
@@ -504,6 +536,211 @@ function renderMoveForm(type) {
     <button id="submit-move-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700" ${canAddItems ? "" : "disabled"}>送出${isOutbound ? "出庫" : "入庫"}（立即生效）</button>
     <p id="move-msg" class="text-xs hidden"></p>
   </div>`;
+}
+
+// ---- 調撥（管理員：把庫存從一個倉庫移到另一個倉庫） ----
+let draftTransferFromClientId = db.clients[0]?.id;
+let draftTransferFromWarehouseId = warehousesOfClient(draftTransferFromClientId)[0]?.id;
+let draftTransferToClientId = db.clients[0]?.id;
+let draftTransferToWarehouseId = warehousesOfClient(draftTransferToClientId)[0]?.id;
+let draftTransferItems = [];
+
+function defaultTransferItem() {
+  const avail = db.products.find(p => stockOf(p.id, draftTransferFromWarehouseId) > 0);
+  return { productId: avail?.id || "", serials: [], qty: 0 };
+}
+
+function resetTransferItems() {
+  draftTransferItems = [defaultTransferItem()];
+}
+
+function renderTransferForm() {
+  if (draftTransferItems.length === 0) resetTransferItems();
+  const fromWarehouses = warehousesOfClient(draftTransferFromClientId);
+  const toWarehouses = warehousesOfClient(draftTransferToClientId);
+  const stockedProducts = db.products.filter(p => stockOf(p.id, draftTransferFromWarehouseId) > 0);
+  const canAddItems = stockedProducts.length > 0;
+  const sameWarehouse = draftTransferFromWarehouseId && draftTransferFromWarehouseId === draftTransferToWarehouseId;
+
+  return `
+  <h2 class="text-lg font-bold text-slate-800 mb-4">調撥（倉庫間移轉庫存）</h2>
+  <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl space-y-4">
+    <div class="grid grid-cols-2 gap-4">
+      <div class="border rounded-lg p-3">
+        <p class="text-xs font-semibold text-slate-600 mb-2">調出（From）</p>
+        <label class="text-xs text-slate-500">客戶</label>
+        <select id="transfer-from-client" class="w-full border rounded-lg px-3 py-2 text-sm mt-1 mb-2">
+          ${db.clients.map(c => `<option value="${c.id}" ${c.id === draftTransferFromClientId ? "selected" : ""}>${c.name}</option>`).join("")}
+        </select>
+        <label class="text-xs text-slate-500">倉庫</label>
+        <select id="transfer-from-warehouse" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
+          ${fromWarehouses.map(w => `<option value="${w.id}" ${w.id === draftTransferFromWarehouseId ? "selected" : ""}>${w.name}</option>`).join("")}
+        </select>
+      </div>
+      <div class="border rounded-lg p-3">
+        <p class="text-xs font-semibold text-slate-600 mb-2">調入（To）</p>
+        <label class="text-xs text-slate-500">客戶</label>
+        <select id="transfer-to-client" class="w-full border rounded-lg px-3 py-2 text-sm mt-1 mb-2">
+          ${db.clients.map(c => `<option value="${c.id}" ${c.id === draftTransferToClientId ? "selected" : ""}>${c.name}</option>`).join("")}
+        </select>
+        <label class="text-xs text-slate-500">倉庫</label>
+        <select id="transfer-to-warehouse" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
+          ${toWarehouses.map(w => `<option value="${w.id}" ${w.id === draftTransferToWarehouseId ? "selected" : ""}>${w.name}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    ${sameWarehouse ? `<p class="text-xs text-rose-500">調出與調入倉庫不能相同</p>` : ""}
+    <div>
+      <label class="text-xs text-slate-500">備註</label>
+      <input id="transfer-note" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="選填"/>
+    </div>
+
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <label class="text-xs text-slate-500">品項明細</label>
+        ${canAddItems ? `<button id="add-transfer-item-btn" class="text-xs text-blue-600 hover:underline">＋ 新增品項</button>` : ""}
+      </div>
+      ${!canAddItems ? `
+        <p class="text-xs text-slate-400 border rounded-lg p-3">「調出」倉庫目前沒有庫存商品可供調撥</p>
+      ` : `
+      <div id="transfer-items-list" class="space-y-3">
+        ${draftTransferItems.map((it, idx) => {
+          const activeSerials = activeSerialsOf(it.productId, draftTransferFromWarehouseId);
+          const nonSerialAvail = nonSerialStockOf(it.productId, draftTransferFromWarehouseId);
+          return `
+          <div class="border rounded-lg p-3 space-y-2 transfer-item-row" data-idx="${idx}">
+            <div class="flex gap-2 items-center">
+              <select class="transfer-item-product border rounded-lg px-2 py-1.5 text-sm flex-1">
+                ${stockedProducts.map(p => `<option value="${p.id}" ${p.id === it.productId ? "selected" : ""}>${p.sku}－${p.name}（庫存 ${stockOf(p.id, draftTransferFromWarehouseId)} ${p.unit}）</option>`).join("")}
+              </select>
+              <button class="remove-transfer-item text-rose-500 text-xs px-2 whitespace-nowrap">✕ 移除品項</button>
+            </div>
+            ${activeSerials.length ? `
+              <div>
+                <label class="text-xs text-slate-500">勾選要調撥的序號</label>
+                <div class="grid grid-cols-2 gap-1 mt-1 max-h-32 overflow-auto border rounded-lg p-2">
+                  ${activeSerials.map(s => `
+                    <label class="flex items-center gap-1 text-xs">
+                      <input type="checkbox" class="transfer-serial-checkbox" value="${s.serialNo}" ${it.serials.includes(s.serialNo) ? "checked" : ""}/>
+                      <span class="truncate">${s.serialNo}</span>
+                    </label>`).join("")}
+                </div>
+                <p class="text-xs text-slate-400 mt-1">已選 ${it.serials.length} 台</p>
+              </div>
+            ` : ""}
+            ${nonSerialAvail > 0 ? `
+              <div>
+                <label class="text-xs text-slate-500">無序號庫存（現有 ${nonSerialAvail} 個）</label>
+                <input type="number" min="0" max="${nonSerialAvail}" value="${it.qty || 0}" class="transfer-item-qty border rounded-lg px-2 py-1.5 text-sm w-32 mt-1" placeholder="調撥數量"/>
+              </div>
+            ` : ""}
+            ${!activeSerials.length && !nonSerialAvail ? `<p class="text-xs text-slate-400">此商品在調出倉庫無可用庫存</p>` : ""}
+          </div>`;
+        }).join("")}
+      </div>
+      `}
+    </div>
+
+    <button id="submit-transfer-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700" ${canAddItems && !sameWarehouse ? "" : "disabled"}>送出調撥（立即生效）</button>
+    <p id="transfer-msg" class="text-xs hidden"></p>
+  </div>`;
+}
+
+function bindTransferForm() {
+  document.getElementById("transfer-from-client").onchange = (e) => {
+    draftTransferFromClientId = e.target.value;
+    draftTransferFromWarehouseId = warehousesOfClient(draftTransferFromClientId)[0]?.id;
+    resetTransferItems();
+    render();
+  };
+  document.getElementById("transfer-from-warehouse").onchange = (e) => {
+    draftTransferFromWarehouseId = e.target.value;
+    resetTransferItems();
+    render();
+  };
+  document.getElementById("transfer-to-client").onchange = (e) => {
+    draftTransferToClientId = e.target.value;
+    draftTransferToWarehouseId = warehousesOfClient(draftTransferToClientId)[0]?.id;
+    render();
+  };
+  document.getElementById("transfer-to-warehouse").onchange = (e) => {
+    draftTransferToWarehouseId = e.target.value;
+    render();
+  };
+  document.getElementById("add-transfer-item-btn")?.addEventListener("click", () => {
+    draftTransferItems.push(defaultTransferItem());
+    render();
+  });
+  document.querySelectorAll(".remove-transfer-item").forEach(btn => {
+    btn.onclick = () => {
+      const idx = +btn.closest(".transfer-item-row").dataset.idx;
+      draftTransferItems.splice(idx, 1);
+      if (draftTransferItems.length === 0) draftTransferItems.push(defaultTransferItem());
+      render();
+    };
+  });
+  document.querySelectorAll(".transfer-item-product").forEach(sel => {
+    sel.onchange = (e) => {
+      const idx = +e.target.closest(".transfer-item-row").dataset.idx;
+      draftTransferItems[idx].productId = e.target.value;
+      draftTransferItems[idx].serials = [];
+      draftTransferItems[idx].qty = 0;
+      render();
+    };
+  });
+  document.querySelectorAll(".transfer-serial-checkbox").forEach(cb => {
+    cb.onchange = (e) => {
+      const idx = +e.target.closest(".transfer-item-row").dataset.idx;
+      const sn = e.target.value;
+      if (e.target.checked) {
+        if (!draftTransferItems[idx].serials.includes(sn)) draftTransferItems[idx].serials.push(sn);
+      } else {
+        draftTransferItems[idx].serials = draftTransferItems[idx].serials.filter(s => s !== sn);
+      }
+      render();
+    };
+  });
+
+  document.getElementById("submit-transfer-btn")?.addEventListener("click", () => {
+    if (draftTransferFromWarehouseId === draftTransferToWarehouseId) {
+      showMsg("transfer-msg", "調出與調入倉庫不能相同", true);
+      return;
+    }
+    const note = document.getElementById("transfer-note").value.trim();
+    const rows = [...document.querySelectorAll(".transfer-item-row")];
+    const items = [];
+    for (const row of rows) {
+      const idx = +row.dataset.idx;
+      const productId = draftTransferItems[idx].productId;
+      const serials = draftTransferItems[idx].serials;
+      const qtyInput = row.querySelector(".transfer-item-qty");
+      const qty = qtyInput ? Math.max(0, +qtyInput.value || 0) : 0;
+      if (serials.length === 0 && qty === 0) {
+        showMsg("transfer-msg", `請勾選序號或輸入調撥數量：${productName(productId)}`, true);
+        return;
+      }
+      const nonSerialAvail = nonSerialStockOf(productId, draftTransferFromWarehouseId);
+      if (qty > nonSerialAvail) {
+        showMsg("transfer-msg", `無序號庫存不足：${productName(productId)} 僅剩 ${nonSerialAvail} 個`, true);
+        return;
+      }
+      items.push({ productId, serials, qty });
+    }
+
+    const u = currentUser();
+    items.forEach(it => {
+      it.serials.forEach(sn => {
+        applyTransfer(it.productId, draftTransferFromWarehouseId, draftTransferToWarehouseId, sn, 1, note, u.id);
+      });
+      if (it.qty > 0) {
+        applyTransfer(it.productId, draftTransferFromWarehouseId, draftTransferToWarehouseId, null, it.qty, note, u.id);
+      }
+    });
+    saveDB(db);
+    resetTransferItems();
+    view.page = "movements";
+    render();
+  });
 }
 
 // ---- 料號管理 ----
@@ -674,6 +911,7 @@ function bindLayout() {
   if (view.page === "movements") bindMovements();
   if (view.page === "move-in") bindMoveForm("inbound");
   if (view.page === "move-out") bindMoveForm("outbound");
+  if (view.page === "move-transfer") bindTransferForm();
   if (view.page === "products") bindProducts();
   if (view.page === "admin") bindAdmin();
 }
@@ -686,6 +924,22 @@ function showMsg(id, text, isError) {
   const el = document.getElementById(id);
   el.textContent = text;
   el.className = `text-xs ${isError ? "text-rose-600" : "text-emerald-600"}`;
+}
+
+// 把每個品項列裡「已輸入但還沒按 Enter / 新增序號」的序號文字，先併入 draftItems，
+// 避免點擊「新增品項」等會重繪畫面的按鈕時，把使用者剛打好但尚未提交的序號洗掉
+function commitPendingSerialInputs() {
+  let blocked = null;
+  document.querySelectorAll(".item-row").forEach(row => {
+    const idx = +row.dataset.idx;
+    const input = row.querySelector(".serial-input");
+    if (!input) return;
+    const val = input.value.trim();
+    if (!val || !draftItems[idx] || draftItems[idx].serials.includes(val)) return;
+    if (serialExistsAnywhere(val)) { blocked = val; return; }
+    draftItems[idx].serials.push(val);
+  });
+  return blocked;
 }
 
 function bindMoveForm(type) {
@@ -701,11 +955,13 @@ function bindMoveForm(type) {
     render();
   };
   document.getElementById("add-item-btn")?.addEventListener("click", () => {
+    commitPendingSerialInputs();
     draftItems.push(defaultDraftItem(type));
     render();
   });
   document.querySelectorAll(".remove-item").forEach(btn => {
     btn.onclick = () => {
+      commitPendingSerialInputs();
       const idx = +btn.closest(".item-row").dataset.idx;
       draftItems.splice(idx, 1);
       if (draftItems.length === 0) draftItems.push(defaultDraftItem(type));
@@ -758,6 +1014,7 @@ function bindMoveForm(type) {
         const val = input.value.trim();
         if (!val) return;
         if (draftItems[idx].serials.includes(val)) { showMsg("move-msg", `序號重複：${val}`, true); return; }
+        if (!isOutbound && serialExistsAnywhere(val)) { showMsg("move-msg", `序號已存在於庫存中，無法重複入庫：${val}`, true); return; }
         draftItems[idx].serials.push(val);
         render();
       };
@@ -777,6 +1034,10 @@ function bindMoveForm(type) {
   }
 
   document.getElementById("submit-move-btn")?.addEventListener("click", () => {
+    if (!isOutbound) {
+      const blockedSerial = commitPendingSerialInputs();
+      if (blockedSerial) { showMsg("move-msg", `序號已存在於庫存中，無法重複入庫：${blockedSerial}`, true); return; }
+    }
     const note = document.getElementById("move-note").value.trim();
     const rows = [...document.querySelectorAll(".item-row")];
     const items = [];
@@ -917,7 +1178,7 @@ function exportCSV() {
   const rows = [["時間", "客戶", "倉庫", "類型", "Material", "序號", "數量", "備註", "操作人"]];
   visibleMovements().forEach(m => rows.push([
     m.timestamp, clientName(clientOfWarehouse(m.warehouseId)), warehouseName(m.warehouseId),
-    m.type === "inbound" ? "入庫" : "出庫", productName(m.productId), m.serialNo || "",
+    TYPE_LABEL[m.type] || m.type, productName(m.productId), m.serialNo || "",
     m.delta, m.note || "", userName(m.operatorId),
   ]));
   const csv = "﻿" + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
