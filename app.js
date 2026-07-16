@@ -3,9 +3,33 @@ let db = loadDB();
 let session = JSON.parse(sessionStorage.getItem("wms_session") || "null");
 let view = { page: "home", filterClientId: null, filterWarehouseId: null };
 let moveMenuOpen = false;
+let navHistory = [];
+
+// 導頁時記住上一頁的完整狀態，供「上一頁」按鈕還原（若導向的其實是同一頁就不記錄，避免出現多餘的上一頁）
+function navigateTo(patch) {
+  const merged = { ...view, ...patch };
+  const isNoOp = Object.keys(merged).every(key => merged[key] === view[key]);
+  if (!isNoOp) navHistory.push({ ...view });
+  Object.assign(view, patch);
+  render();
+}
+function goBack() {
+  if (!navHistory.length) return;
+  view = navHistory.pop();
+  render();
+}
 
 const ROLE_LABEL = { admin: "管理員", client: "客戶" };
 const TYPE_LABEL = { inbound: "入庫", outbound: "出庫", transfer_out: "調撥(出)", transfer_in: "調撥(入)" };
+const STANDARD_WAREHOUSE_NAMES = ["新機", "備機", "壞機", "待修", "待退", "其他"];
+const HOST_CLIENT_ID = "c5"; // 震浤倉(ZH)，本公司，可使用所有客戶的料號
+
+// 建立客戶標配的六個倉庫
+function createStandardWarehouses(clientId) {
+  STANDARD_WAREHOUSE_NAMES.forEach((name, i) => {
+    db.warehouses.push({ id: "w" + Date.now() + i, clientId, name });
+  });
+}
 
 function currentUser() { return db.users.find(u => u.id === session?.userId); }
 
@@ -226,14 +250,48 @@ function renderLayout() {
         <button id="logout-btn" class="w-full text-left px-3 py-2 rounded hover:bg-slate-700 text-sm text-slate-300">🚪 登出</button>
       </div>
     </aside>
-    <main class="flex-1 p-6 overflow-auto">${renderPage()}</main>
+    <main class="flex-1 p-6 overflow-auto">
+      <div class="flex items-center justify-between mb-4">
+        <button id="back-btn" class="text-sm text-blue-600 hover:underline ${navHistory.length ? "" : "invisible"}">← 上一頁</button>
+        <h2 class="text-lg font-bold text-slate-800">${getPageTitle()}</h2>
+      </div>
+      ${renderPage()}
+    </main>
   </div>`;
+}
+
+function getPageTitle() {
+  switch (view.page) {
+    case "home": return "總覽";
+    case "client-settings": {
+      const c = db.clients.find(x => x.id === view.editClientId);
+      return c ? `${c.name}　設定` : "客戶設定";
+    }
+    case "client-new": return "新增客戶";
+    case "inventory": {
+      const isAdmin = currentUser().role === "admin";
+      const filterClientId = isAdmin ? view.filterClientId : null;
+      const filterWarehouseId = isAdmin ? view.filterWarehouseId : null;
+      if (filterWarehouseId) return `${warehouseName(filterWarehouseId)}－庫存狀況`;
+      if (filterClientId) return `${clientName(filterClientId)}－庫存狀況`;
+      return "庫存總覽";
+    }
+    case "movements": return "異動紀錄";
+    case "move-in": return "入庫（即時異動）";
+    case "move-out": return "出庫（即時異動）";
+    case "move-transfer": return "調撥（倉庫間移轉庫存）";
+    case "products": return "料號管理";
+    case "admin": return "管理後台";
+    case "help": return "操作說明";
+    default: return "";
+  }
 }
 
 function renderPage() {
   switch (view.page) {
     case "home": return renderHome();
     case "client-settings": return renderClientSettings();
+    case "client-new": return renderClientNew();
     case "inventory": return renderInventory();
     case "movements": return renderMovements();
     case "move-in": return renderMoveForm("inbound");
@@ -262,7 +320,7 @@ function renderHome() {
         ${isAdmin ? `<button data-edit-client="${c.id}" class="edit-client-btn absolute top-2 right-2 text-slate-400 hover:text-blue-600 text-2xl leading-none">⚙</button>` : ""}
         <button data-goto-client="${c.id}" class="goto-client-inventory w-full flex flex-col items-center gap-1 hover:text-blue-600">
           ${c.logoUrl
-            ? `<img src="${c.logoUrl}" class="w-12 h-12 object-contain rounded" alt="${c.name} logo"/>`
+            ? `<img src="${c.logoUrl}" class="w-24 h-14 object-contain rounded" alt="${c.name} logo"/>`
             : `<span class="text-4xl">🏢</span>`}
           <span class="text-sm font-semibold text-slate-800 text-center">${c.name}</span>
         </button>
@@ -285,34 +343,23 @@ function bindHome() {
   const u = currentUser();
   document.querySelectorAll(".goto-client-inventory").forEach(btn => {
     btn.onclick = () => {
-      view.page = "inventory";
-      view.filterClientId = btn.dataset.gotoClient;
-      view.filterWarehouseId = null;
-      render();
+      navigateTo({ page: "inventory", filterClientId: btn.dataset.gotoClient, filterWarehouseId: null });
     };
   });
   document.querySelectorAll(".goto-warehouse-inventory").forEach(btn => {
     btn.onclick = () => {
-      view.page = "inventory";
-      view.filterWarehouseId = btn.dataset.gotoWarehouse;
-      view.filterClientId = null;
-      render();
+      navigateTo({ page: "inventory", filterWarehouseId: btn.dataset.gotoWarehouse, filterClientId: null });
     };
   });
   if (u.role !== "admin") return;
   document.getElementById("add-client-btn").onclick = () => {
-    const name = prompt("請輸入客戶公司名稱");
-    if (!name) return;
-    db.clients.push({ id: "c" + Date.now(), name });
-    saveDB(db);
-    render();
+    draftNewClient = { name: "", contact: "", phone: "", address: "", logoUrl: "" };
+    navigateTo({ page: "client-new" });
   };
   document.querySelectorAll(".edit-client-btn").forEach(btn => {
     btn.onclick = (e) => {
       e.stopPropagation();
-      view.page = "client-settings";
-      view.editClientId = btn.dataset.editClient;
-      render();
+      navigateTo({ page: "client-settings", editClientId: btn.dataset.editClient });
     };
   });
 }
@@ -324,12 +371,10 @@ function renderClientSettings() {
   const whs = warehousesOfClient(c.id);
 
   return `
-  <button id="client-settings-back-btn" class="text-sm text-blue-600 hover:underline mb-4">← 返回總覽</button>
   <div class="flex items-center gap-3 mb-4">
     ${c.logoUrl
-      ? `<img src="${c.logoUrl}" class="w-10 h-10 object-contain rounded" alt="${c.name} logo"/>`
+      ? `<img src="${c.logoUrl}" class="w-40 h-14 object-contain rounded" alt="${c.name} logo"/>`
       : `<span class="text-3xl">🏢</span>`}
-    <h2 class="text-lg font-bold text-slate-800">${c.name}　設定</h2>
   </div>
 
   <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl mb-6">
@@ -372,15 +417,18 @@ function renderClientSettings() {
           <button data-delete-warehouse="${w.id}" class="delete-warehouse-btn text-xs text-rose-500 hover:underline">刪除</button>
         </li>`).join("") || `<li class="text-xs text-slate-400">尚無倉庫</li>`}
     </ul>
-  </div>`;
+  </div>
+
+  ${c.id !== HOST_CLIENT_ID ? `
+  <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl mt-6 border border-rose-200">
+    <p class="font-semibold text-sm text-rose-700 mb-2">刪除客戶</p>
+    <p class="text-xs text-slate-500 mb-3">若客戶旗下任一倉庫尚有庫存，需先清空庫存才能刪除；刪除後會一併移除旗下所有倉庫。</p>
+    <button id="delete-client-btn" class="border border-rose-300 text-rose-600 rounded-lg px-4 py-2 text-sm hover:bg-rose-50">刪除此客戶</button>
+  </div>` : ""}`;
 }
 
 function bindClientSettings() {
   const c = db.clients.find(x => x.id === view.editClientId);
-  document.getElementById("client-settings-back-btn").onclick = () => {
-    view.page = "home";
-    render();
-  };
   document.querySelector(".set-logo-input").onchange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -421,6 +469,100 @@ function bindClientSettings() {
       render();
     };
   });
+  document.getElementById("delete-client-btn")?.addEventListener("click", () => {
+    const whIds = warehouseIdsOfClient(c.id);
+    const hasStock = db.serialUnits.some(s => whIds.includes(s.warehouseId));
+    if (hasStock) {
+      alert("此客戶旗下倉庫尚有庫存，無法刪除，請先將庫存異動清空");
+      return;
+    }
+    if (!confirm(`確定要刪除客戶「${c.name}」嗎？此動作將一併移除旗下所有倉庫。`)) return;
+    db.warehouses = db.warehouses.filter(w => w.clientId !== c.id);
+    db.users = db.users.filter(u => u.clientId !== c.id);
+    db.clients = db.clients.filter(x => x.id !== c.id);
+    saveDB(db);
+    view.page = "home";
+    render();
+  });
+}
+
+// ---- 新增客戶（管理員：填寫資料、上傳 LOGO，建立後自動配置六個標準倉庫） ----
+let draftNewClient = { name: "", contact: "", phone: "", address: "", logoUrl: "" };
+
+function renderClientNew() {
+  const c = draftNewClient;
+  return `
+  <div class="flex items-center gap-3 mb-4">
+    ${c.logoUrl
+      ? `<img src="${c.logoUrl}" class="w-40 h-14 object-contain rounded" alt="logo"/>`
+      : `<span class="text-3xl">🏢</span>`}
+  </div>
+
+  <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl mb-6">
+    <p class="font-semibold text-sm text-slate-700 mb-3">LOGO</p>
+    <label class="inline-block border rounded-lg px-4 py-2 text-sm hover:bg-slate-100 cursor-pointer">
+      ${c.logoUrl ? "更換 LOGO" : "上傳 LOGO"}
+      <input type="file" accept="image/*" class="hidden set-new-logo-input"/>
+    </label>
+  </div>
+
+  <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl">
+    <p class="font-semibold text-sm text-slate-700 mb-3">公司資料</p>
+    <div class="mb-3">
+      <label class="text-xs text-slate-500">客戶公司名稱</label>
+      <input id="new-client-name" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.name}" placeholder="必填"/>
+    </div>
+    <div class="grid grid-cols-2 gap-3 mb-3">
+      <div>
+        <label class="text-xs text-slate-500">聯絡人</label>
+        <input id="new-client-contact" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.contact}" placeholder="聯絡人姓名"/>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">電話</label>
+        <input id="new-client-phone" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.phone}" placeholder="聯絡電話"/>
+      </div>
+    </div>
+    <div class="mb-3">
+      <label class="text-xs text-slate-500">地址</label>
+      <input id="new-client-address" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.address}" placeholder="公司地址"/>
+    </div>
+    <button id="create-client-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">建立客戶</button>
+    <p id="new-client-msg" class="text-xs hidden mt-2"></p>
+  </div>`;
+}
+
+function bindClientNew() {
+  [["new-client-name", "name"], ["new-client-contact", "contact"], ["new-client-phone", "phone"], ["new-client-address", "address"]].forEach(([id, key]) => {
+    document.getElementById(id).oninput = (e) => { draftNewClient[key] = e.target.value; };
+  });
+  document.querySelector(".set-new-logo-input").onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      draftNewClient.logoUrl = reader.result;
+      render();
+    };
+    reader.readAsDataURL(file);
+  };
+  document.getElementById("create-client-btn").onclick = () => {
+    const name = document.getElementById("new-client-name").value.trim();
+    if (!name) { showMsg("new-client-msg", "請輸入客戶公司名稱", true); return; }
+    const clientId = "c" + Date.now();
+    db.clients.push({
+      id: clientId,
+      name,
+      contact: document.getElementById("new-client-contact").value.trim(),
+      phone: document.getElementById("new-client-phone").value.trim(),
+      address: document.getElementById("new-client-address").value.trim(),
+      logoUrl: draftNewClient.logoUrl || undefined,
+    });
+    createStandardWarehouses(clientId);
+    saveDB(db);
+    draftNewClient = { name: "", contact: "", phone: "", address: "", logoUrl: "" };
+    view.page = "home";
+    render();
+  };
 }
 
 // ---- 庫存總覽 ----
@@ -435,11 +577,12 @@ function renderInventory() {
     ? warehouseIdsOfClient(filterClientId)
     : (isAdmin ? db.warehouses.map(w => w.id) : warehouseIdsOfClient(u.clientId));
   const showClientCol = isAdmin && !filterClientId && !filterWarehouseId;
-  const title = filterWarehouseId
-    ? `${warehouseName(filterWarehouseId)}－庫存狀況`
+  const headerClientId = filterWarehouseId
+    ? clientOfWarehouse(filterWarehouseId)
     : filterClientId
-    ? `${clientName(filterClientId)}－庫存狀況`
-    : "庫存總覽";
+    ? filterClientId
+    : (!isAdmin ? u.clientId : null);
+  const headerClient = headerClientId ? db.clients.find(c => c.id === headerClientId) : null;
 
   const groups = {};
   db.serialUnits.filter(s => whIds.includes(s.warehouseId)).forEach(s => {
@@ -450,7 +593,13 @@ function renderInventory() {
   const rows = Object.values(groups);
 
   return `
-  <h2 class="text-lg font-bold text-slate-800 mb-4">${title}</h2>
+  ${headerClient ? `
+  <div class="flex flex-col items-center mb-4">
+    ${headerClient.logoUrl
+      ? `<img src="${headerClient.logoUrl}" class="w-24 h-14 object-contain rounded" alt="${headerClient.name} logo"/>`
+      : `<span class="text-3xl">🏢</span>`}
+    <p class="font-semibold text-slate-800 mt-1">${headerClient.name}</p>
+  </div>` : ""}
   <div class="bg-white rounded-xl shadow-sm overflow-hidden">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
@@ -481,16 +630,13 @@ function renderMovements() {
   const rows = [...visibleMovements()].sort((a, b) => b.id.localeCompare(a.id));
 
   return `
-  <div class="flex items-center justify-between mb-4">
-    <h2 class="text-lg font-bold text-slate-800">異動紀錄</h2>
-    ${u.role === "admin" ? `<button id="export-btn" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">📊 匯出 CSV</button>` : ""}
-  </div>
+  ${u.role === "admin" ? `<div class="flex justify-end mb-4"><button id="export-btn" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">📊 匯出 CSV</button></div>` : ""}
   <div class="bg-white rounded-xl shadow-sm overflow-hidden">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
         <tr>
           <th class="px-4 py-2">時間</th>${u.role === "admin" ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th>
-          <th class="px-4 py-2">類型</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">序號</th>
+          <th class="px-4 py-2">類型</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">Material description</th><th class="px-4 py-2">序號</th>
           <th class="px-4 py-2">數量</th><th class="px-4 py-2">備註</th>${u.role === "admin" ? `<th class="px-4 py-2">操作人</th>` : ""}
         </tr>
       </thead>
@@ -501,12 +647,13 @@ function renderMovements() {
             ${u.role === "admin" ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(m.warehouseId))}</td>` : ""}
             <td class="px-4 py-2">${warehouseName(m.warehouseId)}</td>
             <td class="px-4 py-2">${TYPE_LABEL[m.type] || m.type}</td>
+            <td class="px-4 py-2 font-mono text-xs">${productSkuOf(m.productId)}</td>
             <td class="px-4 py-2">${productName(m.productId)}</td>
             <td class="px-4 py-2 font-mono text-xs">${m.serialNo || "-"}</td>
             <td class="px-4 py-2 font-semibold ${m.delta < 0 ? "text-rose-600" : "text-emerald-600"}">${m.delta > 0 ? "+" : ""}${m.delta}</td>
             <td class="px-4 py-2 text-slate-500">${m.note || "-"}</td>
             ${u.role === "admin" ? `<td class="px-4 py-2">${userName(m.operatorId)}</td>` : ""}
-          </tr>`).join("") || `<tr><td colspan="${u.role === "admin" ? 9 : 7}" class="px-4 py-8 text-center text-slate-400">尚無異動紀錄</td></tr>`}
+          </tr>`).join("") || `<tr><td colspan="${u.role === "admin" ? 10 : 8}" class="px-4 py-8 text-center text-slate-400">尚無異動紀錄</td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -534,9 +681,11 @@ function resetDraftForClient(clientId, type) {
 
 function findProductBySkuText(text, clientId) {
   const t = text.trim();
-  return db.products.find(p => p.sku === t && (!clientId || p.clientId === clientId));
+  const scoped = !clientId || clientId === HOST_CLIENT_ID;
+  return db.products.find(p => p.sku === t && (scoped || p.clientId === clientId));
 }
 function productsOfClient(clientId) {
+  if (clientId === HOST_CLIENT_ID) return db.products;
   return db.products.filter(p => p.clientId === clientId);
 }
 
@@ -551,7 +700,6 @@ function renderMoveForm(type) {
   const canAddItems = !isOutbound || stockedProducts.length > 0;
 
   return `
-  <h2 class="text-lg font-bold text-slate-800 mb-4">${isOutbound ? "出庫" : "入庫"}（即時異動）</h2>
   <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl space-y-4">
     <div class="grid grid-cols-2 gap-4">
       <div>
@@ -657,11 +805,10 @@ function renderMoveForm(type) {
   </div>`;
 }
 
-// ---- 調撥（管理員：把庫存從一個倉庫移到另一個倉庫） ----
-let draftTransferFromClientId = db.clients[0]?.id;
-let draftTransferFromWarehouseId = warehousesOfClient(draftTransferFromClientId)[0]?.id;
-let draftTransferToClientId = db.clients[0]?.id;
-let draftTransferToWarehouseId = warehousesOfClient(draftTransferToClientId)[0]?.id;
+// ---- 調撥（管理員：同一客戶內部倉庫互相移轉庫存，含震浤本身） ----
+let draftTransferClientId = db.clients[0]?.id;
+let draftTransferFromWarehouseId = warehousesOfClient(draftTransferClientId)[0]?.id;
+let draftTransferToWarehouseId = warehousesOfClient(draftTransferClientId)[1]?.id || draftTransferFromWarehouseId;
 let draftTransferItems = [];
 
 function defaultTransferItem() {
@@ -675,36 +822,30 @@ function resetTransferItems() {
 
 function renderTransferForm() {
   if (draftTransferItems.length === 0) resetTransferItems();
-  const fromWarehouses = warehousesOfClient(draftTransferFromClientId);
-  const toWarehouses = warehousesOfClient(draftTransferToClientId);
+  const clientWarehouses = warehousesOfClient(draftTransferClientId);
   const stockedProducts = db.products.filter(p => stockOf(p.id, draftTransferFromWarehouseId) > 0);
   const canAddItems = stockedProducts.length > 0;
   const sameWarehouse = draftTransferFromWarehouseId && draftTransferFromWarehouseId === draftTransferToWarehouseId;
 
   return `
-  <h2 class="text-lg font-bold text-slate-800 mb-4">調撥（倉庫間移轉庫存）</h2>
   <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl space-y-4">
+    <div>
+      <label class="text-xs text-slate-500">客戶（僅能在同一客戶內部倉庫互相調撥）</label>
+      <select id="transfer-client" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
+        ${db.clients.map(c => `<option value="${c.id}" ${c.id === draftTransferClientId ? "selected" : ""}>${c.name}</option>`).join("")}
+      </select>
+    </div>
     <div class="grid grid-cols-2 gap-4">
       <div class="border rounded-lg p-3">
         <p class="text-xs font-semibold text-slate-600 mb-2">調出（From）</p>
-        <label class="text-xs text-slate-500">客戶</label>
-        <select id="transfer-from-client" class="w-full border rounded-lg px-3 py-2 text-sm mt-1 mb-2">
-          ${db.clients.map(c => `<option value="${c.id}" ${c.id === draftTransferFromClientId ? "selected" : ""}>${c.name}</option>`).join("")}
-        </select>
-        <label class="text-xs text-slate-500">倉庫</label>
         <select id="transfer-from-warehouse" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
-          ${fromWarehouses.map(w => `<option value="${w.id}" ${w.id === draftTransferFromWarehouseId ? "selected" : ""}>${w.name}</option>`).join("")}
+          ${clientWarehouses.map(w => `<option value="${w.id}" ${w.id === draftTransferFromWarehouseId ? "selected" : ""}>${w.name}</option>`).join("")}
         </select>
       </div>
       <div class="border rounded-lg p-3">
         <p class="text-xs font-semibold text-slate-600 mb-2">調入（To）</p>
-        <label class="text-xs text-slate-500">客戶</label>
-        <select id="transfer-to-client" class="w-full border rounded-lg px-3 py-2 text-sm mt-1 mb-2">
-          ${db.clients.map(c => `<option value="${c.id}" ${c.id === draftTransferToClientId ? "selected" : ""}>${c.name}</option>`).join("")}
-        </select>
-        <label class="text-xs text-slate-500">倉庫</label>
         <select id="transfer-to-warehouse" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
-          ${toWarehouses.map(w => `<option value="${w.id}" ${w.id === draftTransferToWarehouseId ? "selected" : ""}>${w.name}</option>`).join("")}
+          ${clientWarehouses.map(w => `<option value="${w.id}" ${w.id === draftTransferToWarehouseId ? "selected" : ""}>${w.name}</option>`).join("")}
         </select>
       </div>
     </div>
@@ -766,9 +907,11 @@ function renderTransferForm() {
 }
 
 function bindTransferForm() {
-  document.getElementById("transfer-from-client").onchange = (e) => {
-    draftTransferFromClientId = e.target.value;
-    draftTransferFromWarehouseId = warehousesOfClient(draftTransferFromClientId)[0]?.id;
+  document.getElementById("transfer-client").onchange = (e) => {
+    draftTransferClientId = e.target.value;
+    const whs = warehousesOfClient(draftTransferClientId);
+    draftTransferFromWarehouseId = whs[0]?.id;
+    draftTransferToWarehouseId = whs[1]?.id || whs[0]?.id;
     resetTransferItems();
     render();
   };
@@ -777,17 +920,12 @@ function bindTransferForm() {
     resetTransferItems();
     render();
   };
-  document.getElementById("transfer-to-client").onchange = (e) => {
-    draftTransferToClientId = e.target.value;
-    draftTransferToWarehouseId = warehousesOfClient(draftTransferToClientId)[0]?.id;
-    render();
-  };
   document.getElementById("transfer-to-warehouse").onchange = (e) => {
     draftTransferToWarehouseId = e.target.value;
     render();
   };
   document.getElementById("add-transfer-item-btn")?.addEventListener("click", () => {
-    draftTransferItems.push(defaultTransferItem());
+    draftTransferItems.unshift(defaultTransferItem());
     render();
   });
   document.querySelectorAll(".remove-transfer-item").forEach(btn => {
@@ -865,7 +1003,6 @@ function bindTransferForm() {
 // ---- 料號管理 ----
 function renderProducts() {
   return `
-  <h2 class="text-lg font-bold text-slate-800 mb-4">料號管理</h2>
   <div class="bg-white rounded-xl shadow-sm p-6 max-w-3xl mb-6">
     <p class="font-semibold text-sm text-slate-700 mb-3">新增料號</p>
     <div class="grid grid-cols-2 gap-3 mb-3">
@@ -883,7 +1020,7 @@ function renderProducts() {
     <div class="grid grid-cols-2 gap-3 mb-3">
       <div>
         <label class="text-xs text-slate-500">單位</label>
-        <input id="new-unit" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="例：個 / 台 / 片" value="個"/>
+        <input id="new-unit" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="例：PCS / 台 / 片" value="PCS"/>
       </div>
       <div>
         <label class="text-xs text-slate-500">安全庫存</label>
@@ -926,7 +1063,6 @@ function renderProducts() {
 // ---- 管理後台 ----
 function renderAdmin() {
   return `
-  <h2 class="text-lg font-bold text-slate-800 mb-4">管理後台</h2>
   <p class="text-xs text-slate-500 mb-4">客戶與倉庫的新增／刪除已整合到「總覽」首頁，這裡管理帳號與資料備份。</p>
   <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl">
     <p class="font-semibold text-sm text-slate-700 mb-3">帳號管理</p>
@@ -1031,8 +1167,9 @@ function renderHelpContent() {
 // ---- 綁定事件 ----
 function bindLayout() {
   document.getElementById("logout-btn").onclick = logout;
+  document.getElementById("back-btn").onclick = goBack;
   document.querySelectorAll(".nav-btn").forEach(btn => {
-    btn.onclick = () => { view.page = btn.dataset.nav; view.filterClientId = null; view.filterWarehouseId = null; render(); };
+    btn.onclick = () => navigateTo({ page: btn.dataset.nav, filterClientId: null, filterWarehouseId: null });
   });
   document.getElementById("move-toggle-btn")?.addEventListener("click", () => {
     moveMenuOpen = !moveMenuOpen;
@@ -1041,6 +1178,7 @@ function bindLayout() {
 
   if (view.page === "home") bindHome();
   if (view.page === "client-settings") bindClientSettings();
+  if (view.page === "client-new") bindClientNew();
   if (view.page === "movements") bindMovements();
   if (view.page === "move-in") bindMoveForm("inbound");
   if (view.page === "move-out") bindMoveForm("outbound");
@@ -1089,7 +1227,7 @@ function bindMoveForm(type) {
   };
   document.getElementById("add-item-btn")?.addEventListener("click", () => {
     commitPendingSerialInputs();
-    draftItems.push(defaultDraftItem(type));
+    draftItems.unshift(defaultDraftItem(type));
     render();
   });
   document.querySelectorAll(".remove-item").forEach(btn => {
@@ -1252,7 +1390,7 @@ function bindProducts() {
     const clientId = document.getElementById("new-client").value;
     const sku = document.getElementById("new-sku").value.trim();
     const desc = document.getElementById("new-desc").value.trim();
-    const unit = document.getElementById("new-unit").value.trim() || "個";
+    const unit = document.getElementById("new-unit").value.trim() || "PCS";
     const safetyStock = Math.max(0, +document.getElementById("new-safety").value || 0);
 
     if (!sku) { showMsg("product-msg", "請填寫料號", true); return; }
@@ -1321,10 +1459,10 @@ function bindAdmin() {
 
 // ---- CSV 匯出 ----
 function exportCSV() {
-  const rows = [["時間", "客戶", "倉庫", "類型", "Material", "序號", "數量", "備註", "操作人"]];
+  const rows = [["時間", "客戶", "倉庫", "類型", "Material", "Material description", "序號", "數量", "備註", "操作人"]];
   visibleMovements().forEach(m => rows.push([
     m.timestamp, clientName(clientOfWarehouse(m.warehouseId)), warehouseName(m.warehouseId),
-    TYPE_LABEL[m.type] || m.type, productName(m.productId), m.serialNo || "",
+    TYPE_LABEL[m.type] || m.type, productSkuOf(m.productId), productName(m.productId), m.serialNo || "",
     m.delta, m.note || "", userName(m.operatorId),
   ]));
   const csv = "﻿" + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");

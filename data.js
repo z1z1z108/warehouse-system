@@ -1,5 +1,5 @@
 // ---- 假資料庫 (localStorage 模擬後端) ----
-const STORAGE_KEY = "warehouse_demo_db_v9";
+const STORAGE_KEY = "warehouse_demo_db_v10";
 
 const DEFAULT_DB = {
   users: [
@@ -17,53 +17,36 @@ const DEFAULT_DB = {
     { id: "c4", name: "友達光電(AUO)", logoUrl: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNjAiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCAxNjAgNjQiPg0KICA8ZyBpZD0iR3JvdXBfMzc3NSIgZGF0YS1uYW1lPSJHcm91cCAzNzc1IiB0cmFuc2Zvcm09InRyYW5zbGF0ZSgtMjAwIC01MikiPg0KICAgIDxnIGlkPSJpbmZvcm1hdGlvbiIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMjAxLjMzNiA1Ni4zMDcpIj4NCiAgICAgIDxnIGlkPSJHcm91cF8xMzAwIiBkYXRhLW5hbWU9Ikdyb3VwIDEzMDAiPg0KICAgICAgICA8ZyBpZD0iR3JvdXBfMTI5OSIgZGF0YS1uYW1lPSJHcm91cCAxMjk5Ij4NCiAgICAgICAgICA8cGF0aCBpZD0iUGF0aF8xMCIgZGF0YS1uYW1lPSJQYXRoIDEwIiBkPSJNMTUzLjI0MSw2OS42MzNjLTcuNi4wMDYtOS4yMDgtOC43MTMtOS4yMDgtMTUuOTY3LDAtNy4yNzYsMS42MDgtMTUuOTY3LDkuMjE5LTE1Ljk3Miw3LjU4OS4wMDYsOS4yMDgsOC43MDcsOS4yMDgsMTUuOTYxLDAsNy4yNzYtMS42MDgsMTUuOTg5LTkuMjE5LDE1Ljk3OG0uMDExLTQzLjJjLTExLjk3My0uMDIyLTIyLjQ3Niw1LjQzLTI2LjIsMTcuMzI2bC0uNTg3LjAwNi0uMDA2LTE1LjI4LTE4LjE2NC4wMTEuMDA2LDI3Ljk2NWMtLjAwNiw2Ljg3OC0xLjg1NywxMC4wMjUtNy4yMjEsMTAuMDMtNS42NTctLjAwNi03LjIwNy0zLjM5LTcuMjA3LTEwLjAyNWwuMDA4LTI3Ljk3SDc1LjkxN2wtLjAxMSwyNi4wNDRjMCwxLjAzLjExOSwxLjg4Mi4xNzQsMi44NGwtLjQ2Mi4xMzNMNjMuODE3LDI4LjVsLTE3Ljk5My0uMDA2TDI0LjEsODEuOTI0aDIwLjFMNTQuNTcsNDkuNDE3aC4yMzhsLjA0Mi4wMDYuMjE2LS4wMDZMNjUuNDQ3LDgxLjkyNGwyMC4wOTEtLjAwNi0zLjc5NC05LjMzMy4zMTgtLjE1MmM0LjE1NywzLjU2OCwxMC40NjUsNC45OTMsMTkuMDkxLDQuOTkzLDE1LjAzNC4wMDYsMjIuNzQ1LTQuNDU5LDI0LjczMi0xNi4wOGwuNTEyLS4wMDZjMy4wNjEsMTMuNDYyLDE0LjE1OSwxOS41NDUsMjYuODQ0LDE5LjU0LDE0LjkxOC4wMTEsMjcuNzQ2LTguMjg5LDI3Ljc2My0yNy4yMjYtLjAwOC0xOC45NTktMTIuODMxLTI3LjIyNi0yNy43NTItMjcuMjI2IiB0cmFuc2Zvcm09InRyYW5zbGF0ZSgtMjQuMDk1IC0yNi40MjkpIiBmaWxsPSIjMDA1MDg3Ii8+DQogICAgICAgIDwvZz4NCiAgICAgIDwvZz4NCiAgICA8L2c+DQogICAgPHJlY3QgaWQ9IlJlY3RhbmdsZV8yNzUiIGRhdGEtbmFtZT0iUmVjdGFuZ2xlIDI3NSIgd2lkdGg9IjE2MCIgaGVpZ2h0PSI2NCIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMjAwIDUyKSIgZmlsbD0ibm9uZSIvPg0KICA8L2c+DQo8L3N2Zz4NCg=="  },
     { id: "c5", name: "震浤倉(ZH)", logoUrl: "data:image/webp;base64,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" }, // 本公司
   ],
-  warehouses: [
-    { id: "w1", clientId: "c1", name: "APD-倉庫1" },
-
-    { id: "w2", clientId: "c2", name: "FIMER-倉庫1" },
-    { id: "w3", clientId: "c2", name: "FIMER-倉庫2" },
-
-    { id: "w4", clientId: "c3", name: "SLE-倉庫1" },
-    { id: "w5", clientId: "c3", name: "SLE-倉庫2" },
-    { id: "w6", clientId: "c3", name: "SLE-倉庫3" },
-
-    { id: "w7", clientId: "c4", name: "AUO-倉庫1" },
-    { id: "w8", clientId: "c4", name: "AUO-倉庫2" },
-    { id: "w9", clientId: "c4", name: "AUO-倉庫3" },
-    { id: "w10", clientId: "c4", name: "AUO-倉庫4" },
-
-    { id: "w11", clientId: "c5", name: "ZH-倉庫1" },
-    { id: "w12", clientId: "c5", name: "ZH-倉庫2" },
-    { id: "w13", clientId: "c5", name: "ZH-倉庫3" },
-    { id: "w14", clientId: "c5", name: "ZH-倉庫4" },
-    { id: "w15", clientId: "c5", name: "ZH-倉庫5" },
-  ],
+  // 每個客戶都固定擁有這六個倉庫
+  warehouses: ["新機", "備機", "壞機", "待修", "待退", "其他"].flatMap((name, i) =>
+    ["c1", "c2", "c3", "c4", "c5"].map(clientId => ({ id: `w-${clientId}-${i}`, clientId, name }))
+  ),
   // 每個料號都歸屬於一個客戶（clientId）
   products: [
-    { id: "p1", sku: "3AUA0000064885", name: "REV.K;CONTROL PANEL; ACS-AP-I MODULE; UN", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p2", sku: "3AUA0000089109", name: "REV.Q;FENA-21; FENA-21; ETHERNET; ASSEMB", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p3", sku: "3AUA0000110430", name: "REV.K;CONTROL UNIT; BCU-12; 7_CH; ASSEMB", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p4", sku: "3AXD50000006010", name: "REV.A;MEMORY UNIT KIT; ZMU-02; .; ASSEMB", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p5", sku: "3AXD50000022178", name: "REV.A;PLATE,STEEL;AC CABLE LEAD THROUGH;", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p6", sku: "3AXD50000030914", name: "REV.A;PLATE,STAINLESS STEEL;AUX POWER LE", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p7", sku: "3AXD50000030915", name: "REV.A;PLATE,STAINLESS STEEL;SIGNAL LEAD-", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p8", sku: "3AXD50000031182", name: "REV.A;LEAD THROUGH ; SCG 2X3-35 SPLITTIN", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p9", sku: "3AXD50000031183", name: "REV.A;LEAD THROUGH ; SCG 1X3-35 SPLITTIN", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p10", sku: "3AXD50000036531", name: "REV.B;ASSEMBLY KIT ; POWER MODULE LIFTIN", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p11", sku: "3AYN2073000-604", name: "POWER MODULE; IEC; PVS980-104SC-925A-7;6", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p12", sku: "3M44990F001A", name: "TRIO-20.0-TL-OUTD-S2X-400;BRAND FIMER", unit: "個", safetyStock: 0, clientId: "c2" },
-    { id: "p13", sku: "3M44990F201A", name: "TRIO-20.0-TL-OUTD-400;BRAND FIMER", unit: "個", safetyStock: 0, clientId: "c2" },
+    { id: "p1", sku: "3AUA0000064885", name: "REV.K;CONTROL PANEL; ACS-AP-I MODULE; UN", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p2", sku: "3AUA0000089109", name: "REV.Q;FENA-21; FENA-21; ETHERNET; ASSEMB", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p3", sku: "3AUA0000110430", name: "REV.K;CONTROL UNIT; BCU-12; 7_CH; ASSEMB", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p4", sku: "3AXD50000006010", name: "REV.A;MEMORY UNIT KIT; ZMU-02; .; ASSEMB", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p5", sku: "3AXD50000022178", name: "REV.A;PLATE,STEEL;AC CABLE LEAD THROUGH;", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p6", sku: "3AXD50000030914", name: "REV.A;PLATE,STAINLESS STEEL;AUX POWER LE", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p7", sku: "3AXD50000030915", name: "REV.A;PLATE,STAINLESS STEEL;SIGNAL LEAD-", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p8", sku: "3AXD50000031182", name: "REV.A;LEAD THROUGH ; SCG 2X3-35 SPLITTIN", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p9", sku: "3AXD50000031183", name: "REV.A;LEAD THROUGH ; SCG 1X3-35 SPLITTIN", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p10", sku: "3AXD50000036531", name: "REV.B;ASSEMBLY KIT ; POWER MODULE LIFTIN", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p11", sku: "3AYN2073000-604", name: "POWER MODULE; IEC; PVS980-104SC-925A-7;6", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p12", sku: "3M44990F001A", name: "TRIO-20.0-TL-OUTD-S2X-400;BRAND FIMER", unit: "PCS", safetyStock: 0, clientId: "c2" },
+    { id: "p13", sku: "3M44990F201A", name: "TRIO-20.0-TL-OUTD-400;BRAND FIMER", unit: "PCS", safetyStock: 0, clientId: "c2" },
     // 台灣所樂能源(SLE)
-    { id: "p14", sku: "SE10000H-RWSKBF57", name: "SE10000H-RWSKBF57", unit: "個", safetyStock: 0, clientId: "c3" },
-    { id: "p15", sku: "SE100K-RW00IBNC4", name: "SE100K-RW00IBNC4", unit: "個", safetyStock: 0, clientId: "c3" },
-    { id: "p16", sku: "SE100K-RW00IBNE4", name: "SE100K-RW00IBNE4", unit: "個", safetyStock: 0, clientId: "c3" },
-    { id: "p17", sku: "SE100K-RW00IBNK4", name: "SE100K-RW00IBNK4", unit: "個", safetyStock: 0, clientId: "c3" },
+    { id: "p14", sku: "SE10000H-RWSKBF57", name: "SE10000H-RWSKBF57", unit: "PCS", safetyStock: 0, clientId: "c3" },
+    { id: "p15", sku: "SE100K-RW00IBNC4", name: "SE100K-RW00IBNC4", unit: "PCS", safetyStock: 0, clientId: "c3" },
+    { id: "p16", sku: "SE100K-RW00IBNE4", name: "SE100K-RW00IBNE4", unit: "PCS", safetyStock: 0, clientId: "c3" },
+    { id: "p17", sku: "SE100K-RW00IBNK4", name: "SE100K-RW00IBNK4", unit: "PCS", safetyStock: 0, clientId: "c3" },
     // 亞源科技(APD)
-    { id: "p18", sku: "PV-30000S-U", name: "PV-30000S-U", unit: "個", safetyStock: 0, clientId: "c1" },
-    { id: "p19", sku: "PV-5000M-V", name: "PV-5000M-V", unit: "個", safetyStock: 0, clientId: "c1" },
-    { id: "p20", sku: "PV-75000T-U", name: "PV-75000T-U", unit: "個", safetyStock: 0, clientId: "c1" },
-    { id: "p21", sku: "PV-60000T-U", name: "PV-60000T-U", unit: "個", safetyStock: 0, clientId: "c1" },
-    { id: "p22", sku: "PV-5000-SHV", name: "PV-5000-SHV", unit: "個", safetyStock: 0, clientId: "c1" },
+    { id: "p18", sku: "PV-30000S-U", name: "PV-30000S-U", unit: "PCS", safetyStock: 0, clientId: "c1" },
+    { id: "p19", sku: "PV-5000M-V", name: "PV-5000M-V", unit: "PCS", safetyStock: 0, clientId: "c1" },
+    { id: "p20", sku: "PV-75000T-U", name: "PV-75000T-U", unit: "PCS", safetyStock: 0, clientId: "c1" },
+    { id: "p21", sku: "PV-60000T-U", name: "PV-60000T-U", unit: "PCS", safetyStock: 0, clientId: "c1" },
+    { id: "p22", sku: "PV-5000-SHV", name: "PV-5000-SHV", unit: "PCS", safetyStock: 0, clientId: "c1" },
   ],
   // 庫存以「逐台序號」追蹤：每一台在庫的實體都是一筆記錄，序號全域唯一
   serialUnits: [],
