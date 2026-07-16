@@ -259,7 +259,7 @@ function renderHome() {
       const whs = warehousesOfClient(c.id);
       return `
       <div class="bg-white rounded-xl shadow-sm p-4 relative">
-        ${isAdmin ? `<button data-edit-client="${c.id}" class="edit-client-btn absolute top-2 right-2 text-slate-400 hover:text-blue-600 text-sm">⚙</button>` : ""}
+        ${isAdmin ? `<button data-edit-client="${c.id}" class="edit-client-btn absolute top-2 right-2 text-slate-400 hover:text-blue-600 text-2xl leading-none">⚙</button>` : ""}
         <button data-goto-client="${c.id}" class="goto-client-inventory w-full flex flex-col items-center gap-1 hover:text-blue-600">
           ${c.logoUrl
             ? `<img src="${c.logoUrl}" class="w-12 h-12 object-contain rounded" alt="${c.name} logo"/>`
