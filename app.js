@@ -41,7 +41,7 @@ function login(email, password) {
   navHistory = [];
   view = u.role === "admin"
     ? { page: "home", filterClientId: null, filterWarehouseId: null }
-    : { page: "inventory", filterClientId: null, filterWarehouseId: null };
+    : { page: "dashboard", filterClientId: null, filterWarehouseId: null };
   return true;
 }
 
@@ -232,7 +232,7 @@ function renderLayout() {
         <p class="text-xs text-slate-400 mt-1">${u.name}（${ROLE_LABEL[u.role]}）</p>
       </div>
       <nav class="flex-1 p-3 space-y-1 text-sm">
-        ${u.role === "admin" ? `<button data-nav="home" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">🏠 總覽</button>` : ""}
+        <button data-nav="${u.role === "admin" ? "home" : "dashboard"}" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">🏠 總覽</button>
         <button data-nav="inventory" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">📦 庫存總覽</button>
         <button data-nav="movements" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">📜 異動紀錄</button>
         ${u.role === "admin" ? `
@@ -272,14 +272,19 @@ function getPageTitle() {
       return c ? `${c.name}　設定` : "客戶設定";
     }
     case "client-new": return "新增客戶";
+    case "dashboard": {
+      const u = currentUser();
+      const clientId = u.role === "admin" ? view.filterClientId : u.clientId;
+      return clientId ? `${clientName(clientId)}－庫存狀況` : "客戶儀表板";
+    }
     case "inventory": {
       const u = currentUser();
       const isAdmin = u.role === "admin";
-      const filterClientId = isAdmin ? view.filterClientId : null;
-      const filterWarehouseId = isAdmin ? view.filterWarehouseId : null;
+      const filterWarehouseId = isAdmin
+        ? view.filterWarehouseId
+        : (view.filterWarehouseId && clientOfWarehouse(view.filterWarehouseId) === u.clientId ? view.filterWarehouseId : null);
       if (filterWarehouseId) return `${warehouseName(filterWarehouseId)}－庫存狀況`;
-      if (filterClientId) return `${clientName(filterClientId)}－庫存狀況`;
-      if (!isAdmin) return `${clientName(u.clientId)}－庫存狀況`;
+      if (!isAdmin) return `${clientName(u.clientId)}－庫存總覽`;
       return "庫存總覽";
     }
     case "movements": return "異動紀錄";
@@ -298,6 +303,7 @@ function renderPage() {
     case "home": return renderHome();
     case "client-settings": return renderClientSettings();
     case "client-new": return renderClientNew();
+    case "dashboard": return renderDashboardPage();
     case "inventory": return renderInventory();
     case "movements": return renderMovements();
     case "move-in": return renderMoveForm("inbound");
@@ -349,14 +355,10 @@ function bindHome() {
   const u = currentUser();
   document.querySelectorAll(".goto-client-inventory").forEach(btn => {
     btn.onclick = () => {
-      navigateTo({ page: "inventory", filterClientId: btn.dataset.gotoClient, filterWarehouseId: null });
+      navigateTo({ page: "dashboard", filterClientId: btn.dataset.gotoClient, filterWarehouseId: null });
     };
   });
-  document.querySelectorAll(".goto-warehouse-inventory").forEach(btn => {
-    btn.onclick = () => {
-      navigateTo({ page: "inventory", filterWarehouseId: btn.dataset.gotoWarehouse, filterClientId: null });
-    };
-  });
+  bindGotoWarehouseButtons();
   if (u.role !== "admin") return;
   document.getElementById("add-client-btn").onclick = () => {
     draftNewClient = { name: "", contact: "", phone: "", address: "", logoUrl: "", warehouses: [...STANDARD_WAREHOUSE_NAMES] };
@@ -699,27 +701,46 @@ function renderClientDashboard(client, whIds) {
           </tr>`).join("") || `<tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">今天還沒有異動</td></tr>`}
       </tbody>
     </table>
-  </div>
+  </div>`;
+}
 
-  <p class="font-semibold text-sm text-slate-700 mb-2">完整庫存明細</p>`;
+// ---- 客戶儀表板頁面 ----
+function renderDashboardPage() {
+  const u = currentUser();
+  const clientId = u.role === "admin" ? view.filterClientId : u.clientId;
+  const client = clientId ? db.clients.find(c => c.id === clientId) : null;
+  if (!client) return `<p class="text-slate-400">請從總覽點選一間客戶公司</p>`;
+  const whIds = warehouseIdsOfClient(client.id);
+
+  return `
+  <div class="flex items-center gap-2 mb-4">
+    ${client.logoUrl
+      ? `<img src="${client.logoUrl}" class="w-20 h-12 object-contain rounded shrink-0" alt="${client.name} logo"/>`
+      : `<span class="text-3xl shrink-0">🏢</span>`}
+    <p class="font-semibold text-slate-800">${client.name}</p>
+  </div>
+  ${renderClientDashboard(client, whIds)}`;
+}
+
+function bindDashboardPage() {
+  bindGotoWarehouseButtons();
 }
 
 // ---- 庫存總覽 ----
+let inventoryFilter = { query: "", warehouseId: "", lowOnly: false };
+
 function renderInventory() {
   const u = currentUser();
   const isAdmin = u.role === "admin";
-  const filterClientId = isAdmin ? view.filterClientId : null;
-  const filterWarehouseId = isAdmin ? view.filterWarehouseId : null;
+  const filterWarehouseId = isAdmin
+    ? view.filterWarehouseId
+    : (view.filterWarehouseId && clientOfWarehouse(view.filterWarehouseId) === u.clientId ? view.filterWarehouseId : null);
   const whIds = filterWarehouseId
     ? [filterWarehouseId]
-    : filterClientId
-    ? warehouseIdsOfClient(filterClientId)
     : (isAdmin ? db.warehouses.map(w => w.id) : warehouseIdsOfClient(u.clientId));
-  const showClientCol = isAdmin && !filterClientId && !filterWarehouseId;
+  const showClientCol = isAdmin && !filterWarehouseId;
   const headerClientId = filterWarehouseId
     ? clientOfWarehouse(filterWarehouseId)
-    : filterClientId
-    ? filterClientId
     : (!isAdmin ? u.clientId : null);
   const headerClient = headerClientId ? db.clients.find(c => c.id === headerClientId) : null;
 
@@ -729,8 +750,15 @@ function renderInventory() {
     if (!groups[key]) groups[key] = { product: db.products.find(p => p.id === s.productId), warehouseId: s.warehouseId, qty: 0 };
     groups[key].qty++;
   });
-  const rows = Object.values(groups);
-  const isClientDashboard = headerClient && !filterWarehouseId;
+  let rows = Object.values(groups);
+
+  if (inventoryFilter.warehouseId && !whIds.includes(inventoryFilter.warehouseId)) inventoryFilter.warehouseId = "";
+  const q = inventoryFilter.query.trim().toLowerCase();
+  if (q) rows = rows.filter(r => r.product.sku.toLowerCase().includes(q) || r.product.name.toLowerCase().includes(q));
+  if (inventoryFilter.warehouseId) rows = rows.filter(r => r.warehouseId === inventoryFilter.warehouseId);
+  if (inventoryFilter.lowOnly) rows = rows.filter(r => r.qty < r.product.safetyStock);
+
+  const filterWarehouseOptions = whIds.map(id => ({ id, name: warehouseName(id) }));
 
   return `
   ${headerClient ? `
@@ -740,7 +768,24 @@ function renderInventory() {
       : `<span class="text-3xl shrink-0">🏢</span>`}
     <p class="font-semibold text-slate-800">${headerClient.name}</p>
   </div>` : ""}
-  ${isClientDashboard ? renderClientDashboard(headerClient, whIds) : ""}
+  <div class="bg-white rounded-xl shadow-sm p-4 mb-4 flex flex-wrap items-end gap-3">
+    <div>
+      <label class="text-xs text-slate-500">搜尋 Material / 說明</label>
+      <input id="inventory-filter-query" class="border rounded-lg px-3 py-2 text-sm mt-1 w-56" value="${inventoryFilter.query}" placeholder="輸入關鍵字"/>
+    </div>
+    ${filterWarehouseOptions.length > 1 ? `
+    <div>
+      <label class="text-xs text-slate-500">倉庫</label>
+      <select id="inventory-filter-warehouse" class="border rounded-lg px-3 py-2 text-sm mt-1">
+        <option value="">全部倉庫</option>
+        ${filterWarehouseOptions.map(w => `<option value="${w.id}" ${inventoryFilter.warehouseId === w.id ? "selected" : ""}>${w.name}</option>`).join("")}
+      </select>
+    </div>` : ""}
+    <label class="flex items-center gap-1.5 text-sm text-slate-600 pb-2">
+      <input type="checkbox" id="inventory-filter-low" ${inventoryFilter.lowOnly ? "checked" : ""}/> 只顯示低於安全庫存
+    </label>
+    <button id="inventory-filter-clear-btn" class="text-xs text-blue-600 hover:underline pb-2.5">清除篩選</button>
+  </div>
   <div class="bg-white rounded-xl shadow-sm overflow-hidden">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
@@ -758,13 +803,35 @@ function renderInventory() {
             <td class="px-4 py-2 font-semibold">${r.qty} ${r.product.unit}</td>
             <td class="px-4 py-2">${low ? `<span class="px-2 py-0.5 rounded-full text-xs bg-rose-100 text-rose-700">低於安全庫存</span>` : `<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">正常</span>`}</td>
           </tr>`;
-        }).join("") || `<tr><td colspan="${showClientCol ? 6 : 5}" class="px-4 py-8 text-center text-slate-400">尚無庫存資料</td></tr>`}
+        }).join("") || `<tr><td colspan="${showClientCol ? 6 : 5}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的庫存資料</td></tr>`}
       </tbody>
     </table>
   </div>`;
 }
 
 function bindInventory() {
+  document.getElementById("inventory-filter-query").oninput = (e) => {
+    inventoryFilter.query = e.target.value;
+    render();
+    const el = document.getElementById("inventory-filter-query");
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  };
+  document.getElementById("inventory-filter-warehouse")?.addEventListener("change", (e) => {
+    inventoryFilter.warehouseId = e.target.value;
+    render();
+  });
+  document.getElementById("inventory-filter-low").onchange = (e) => {
+    inventoryFilter.lowOnly = e.target.checked;
+    render();
+  };
+  document.getElementById("inventory-filter-clear-btn").onclick = () => {
+    inventoryFilter = { query: "", warehouseId: "", lowOnly: false };
+    render();
+  };
+}
+
+function bindGotoWarehouseButtons() {
   document.querySelectorAll(".goto-warehouse-inventory").forEach(btn => {
     btn.onclick = () => {
       navigateTo({ page: "inventory", filterWarehouseId: btn.dataset.gotoWarehouse, filterClientId: null });
@@ -773,12 +840,68 @@ function bindInventory() {
 }
 
 // ---- 異動紀錄 ----
+let movementsFilter = { type: "", warehouseId: "", dateFrom: "", dateTo: "", query: "" };
+
+function movementDateStr(m) {
+  const [datePart] = m.timestamp.split(" ");
+  const [y, mo, d] = datePart.split("/");
+  return `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`;
+}
+
+function getFilteredMovements() {
+  let rows = [...visibleMovements()].sort((a, b) => b.id.localeCompare(a.id));
+  if (movementsFilter.type) rows = rows.filter(m => m.type === movementsFilter.type);
+  if (movementsFilter.warehouseId) rows = rows.filter(m => m.warehouseId === movementsFilter.warehouseId);
+  if (movementsFilter.dateFrom) rows = rows.filter(m => movementDateStr(m) >= movementsFilter.dateFrom);
+  if (movementsFilter.dateTo) rows = rows.filter(m => movementDateStr(m) <= movementsFilter.dateTo);
+  const q = movementsFilter.query.trim().toLowerCase();
+  if (q) {
+    rows = rows.filter(m =>
+      productSkuOf(m.productId).toLowerCase().includes(q) ||
+      productName(m.productId).toLowerCase().includes(q) ||
+      (m.serialNo || "").toLowerCase().includes(q) ||
+      (m.note || "").toLowerCase().includes(q)
+    );
+  }
+  return rows;
+}
+
 function renderMovements() {
   const u = currentUser();
-  const rows = [...visibleMovements()].sort((a, b) => b.id.localeCompare(a.id));
+  const rows = getFilteredMovements();
+  const warehouseOptions = u.role === "admin" ? db.warehouses : warehousesOfClient(u.clientId);
 
   return `
-  ${u.role === "admin" ? `<div class="flex justify-end mb-4"><button id="export-btn" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">📊 匯出 CSV</button></div>` : ""}
+  <div class="bg-white rounded-xl shadow-sm p-4 mb-4 flex flex-wrap items-end gap-3">
+    <div>
+      <label class="text-xs text-slate-500">搜尋 Material / 序號 / 備註</label>
+      <input id="movements-filter-query" class="border rounded-lg px-3 py-2 text-sm mt-1 w-56" value="${movementsFilter.query}" placeholder="輸入關鍵字"/>
+    </div>
+    <div>
+      <label class="text-xs text-slate-500">類型</label>
+      <select id="movements-filter-type" class="border rounded-lg px-3 py-2 text-sm mt-1">
+        <option value="">全部類型</option>
+        ${Object.entries(TYPE_LABEL).map(([val, label]) => `<option value="${val}" ${movementsFilter.type === val ? "selected" : ""}>${label}</option>`).join("")}
+      </select>
+    </div>
+    <div>
+      <label class="text-xs text-slate-500">倉庫</label>
+      <select id="movements-filter-warehouse" class="border rounded-lg px-3 py-2 text-sm mt-1">
+        <option value="">全部倉庫</option>
+        ${warehouseOptions.map(w => `<option value="${w.id}" ${movementsFilter.warehouseId === w.id ? "selected" : ""}>${w.name}</option>`).join("")}
+      </select>
+    </div>
+    <div>
+      <label class="text-xs text-slate-500">日期起</label>
+      <input type="date" id="movements-filter-from" class="border rounded-lg px-3 py-2 text-sm mt-1" value="${movementsFilter.dateFrom}"/>
+    </div>
+    <div>
+      <label class="text-xs text-slate-500">日期迄</label>
+      <input type="date" id="movements-filter-to" class="border rounded-lg px-3 py-2 text-sm mt-1" value="${movementsFilter.dateTo}"/>
+    </div>
+    <button id="movements-filter-clear-btn" class="text-xs text-blue-600 hover:underline pb-2.5">清除篩選</button>
+    ${u.role === "admin" ? `<button id="export-btn" class="border rounded-lg text-sm px-3 py-2 hover:bg-slate-100 ml-auto">📊 匯出 CSV</button>` : ""}
+  </div>
   <div class="bg-white rounded-xl shadow-sm overflow-hidden">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
@@ -801,7 +924,7 @@ function renderMovements() {
             <td class="px-4 py-2 font-semibold ${m.delta < 0 ? "text-rose-600" : "text-emerald-600"}">${m.delta > 0 ? "+" : ""}${m.delta}</td>
             <td class="px-4 py-2 text-slate-500">${m.note || "-"}</td>
             ${u.role === "admin" ? `<td class="px-4 py-2">${userName(m.operatorId)}</td>` : ""}
-          </tr>`).join("") || `<tr><td colspan="${u.role === "admin" ? 10 : 8}" class="px-4 py-8 text-center text-slate-400">尚無異動紀錄</td></tr>`}
+          </tr>`).join("") || `<tr><td colspan="${u.role === "admin" ? 10 : 8}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的異動紀錄</td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -1325,6 +1448,7 @@ function bindLayout() {
   });
 
   if (view.page === "home") bindHome();
+  if (view.page === "dashboard") bindDashboardPage();
   if (view.page === "inventory") bindInventory();
   if (view.page === "client-settings") bindClientSettings();
   if (view.page === "client-new") bindClientNew();
@@ -1338,6 +1462,33 @@ function bindLayout() {
 
 function bindMovements() {
   document.getElementById("export-btn")?.addEventListener("click", exportCSV);
+  document.getElementById("movements-filter-query").oninput = (e) => {
+    movementsFilter.query = e.target.value;
+    render();
+    const el = document.getElementById("movements-filter-query");
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  };
+  document.getElementById("movements-filter-type").onchange = (e) => {
+    movementsFilter.type = e.target.value;
+    render();
+  };
+  document.getElementById("movements-filter-warehouse").onchange = (e) => {
+    movementsFilter.warehouseId = e.target.value;
+    render();
+  };
+  document.getElementById("movements-filter-from").onchange = (e) => {
+    movementsFilter.dateFrom = e.target.value;
+    render();
+  };
+  document.getElementById("movements-filter-to").onchange = (e) => {
+    movementsFilter.dateTo = e.target.value;
+    render();
+  };
+  document.getElementById("movements-filter-clear-btn").onclick = () => {
+    movementsFilter = { type: "", warehouseId: "", dateFrom: "", dateTo: "", query: "" };
+    render();
+  };
 }
 
 function showMsg(id, text, isError) {
@@ -1609,7 +1760,7 @@ function bindAdmin() {
 // ---- CSV 匯出 ----
 function exportCSV() {
   const rows = [["時間", "客戶", "倉庫", "類型", "Material", "Material description", "序號", "數量", "備註", "操作人"]];
-  visibleMovements().forEach(m => rows.push([
+  getFilteredMovements().forEach(m => rows.push([
     m.timestamp, clientName(clientOfWarehouse(m.warehouseId)), warehouseName(m.warehouseId),
     TYPE_LABEL[m.type] || m.type, productSkuOf(m.productId), productName(m.productId), m.serialNo || "",
     m.delta, m.note || "", userName(m.operatorId),
