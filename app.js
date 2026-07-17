@@ -38,6 +38,10 @@ function login(email, password) {
   if (!u) return false;
   session = { userId: u.id };
   sessionStorage.setItem("wms_session", JSON.stringify(session));
+  navHistory = [];
+  view = u.role === "admin"
+    ? { page: "home", filterClientId: null, filterWarehouseId: null }
+    : { page: "inventory", filterClientId: null, filterWarehouseId: null };
   return true;
 }
 
@@ -209,7 +213,7 @@ function bindLogin() {
   document.getElementById("show-help-btn").onclick = () => {
     document.getElementById("app").innerHTML = `
       <div class="min-h-screen bg-slate-50 p-6">
-        <button id="help-back-btn" class="text-sm text-blue-600 hover:underline mb-4">← 返回登入</button>
+        <button id="help-back-btn" class="border rounded-xl px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 mb-4">← 返回登入</button>
         ${renderHelpContent()}
       </div>`;
     document.getElementById("help-back-btn").onclick = render;
@@ -221,14 +225,14 @@ function renderLayout() {
   const u = currentUser();
   if (view.page === "move-in" || view.page === "move-out" || view.page === "move-transfer") moveMenuOpen = true;
   return `
-  <div class="min-h-screen flex">
-    <aside class="w-56 bg-slate-800 text-slate-100 flex flex-col">
+  <div class="h-screen flex overflow-hidden">
+    <aside class="w-56 bg-slate-800 text-slate-100 flex flex-col shrink-0 h-screen overflow-y-auto">
       <div class="p-5 border-b border-slate-700">
         <h1 class="font-bold text-lg">📦 震浤倉管系統</h1>
         <p class="text-xs text-slate-400 mt-1">${u.name}（${ROLE_LABEL[u.role]}）</p>
       </div>
       <nav class="flex-1 p-3 space-y-1 text-sm">
-        <button data-nav="home" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">🏠 總覽</button>
+        ${u.role === "admin" ? `<button data-nav="home" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">🏠 總覽</button>` : ""}
         <button data-nav="inventory" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">📦 庫存總覽</button>
         <button data-nav="movements" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">📜 異動紀錄</button>
         ${u.role === "admin" ? `
@@ -252,7 +256,7 @@ function renderLayout() {
     </aside>
     <main class="flex-1 p-6 overflow-auto">
       <div class="flex items-center justify-between mb-4">
-        <button id="back-btn" class="text-sm text-blue-600 hover:underline ${navHistory.length ? "" : "invisible"}">← 上一頁</button>
+        <button id="back-btn" class="border rounded-xl px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 ${navHistory.length ? "" : "invisible"}">← 上一頁</button>
         <h2 class="text-lg font-bold text-slate-800">${getPageTitle()}</h2>
       </div>
       ${renderPage()}
@@ -262,18 +266,20 @@ function renderLayout() {
 
 function getPageTitle() {
   switch (view.page) {
-    case "home": return "總覽";
+    case "home": return "";
     case "client-settings": {
       const c = db.clients.find(x => x.id === view.editClientId);
       return c ? `${c.name}　設定` : "客戶設定";
     }
     case "client-new": return "新增客戶";
     case "inventory": {
-      const isAdmin = currentUser().role === "admin";
+      const u = currentUser();
+      const isAdmin = u.role === "admin";
       const filterClientId = isAdmin ? view.filterClientId : null;
       const filterWarehouseId = isAdmin ? view.filterWarehouseId : null;
       if (filterWarehouseId) return `${warehouseName(filterWarehouseId)}－庫存狀況`;
       if (filterClientId) return `${clientName(filterClientId)}－庫存狀況`;
+      if (!isAdmin) return `${clientName(u.clientId)}－庫存狀況`;
       return "庫存總覽";
     }
     case "movements": return "異動紀錄";
@@ -311,18 +317,18 @@ function renderHome() {
   const isAdmin = u.role === "admin";
 
   return `
-  ${isAdmin ? `<div class="flex justify-end mb-4"><button id="add-client-btn" class="text-xs text-blue-600 hover:underline">＋ 新增客戶</button></div>` : ""}
+  ${isAdmin ? `<div class="flex justify-end mb-4"><button id="add-client-btn" class="border rounded-xl px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">➕ 新增客戶</button></div>` : ""}
   <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
     ${clients.map(c => {
       const whs = warehousesOfClient(c.id);
       return `
       <div class="bg-white rounded-xl shadow-sm p-4 relative">
         ${isAdmin ? `<button data-edit-client="${c.id}" class="edit-client-btn absolute top-2 right-2 text-slate-400 hover:text-blue-600 text-2xl leading-none">⚙</button>` : ""}
-        <button data-goto-client="${c.id}" class="goto-client-inventory w-full flex flex-col items-center gap-1 hover:text-blue-600">
+        <button data-goto-client="${c.id}" class="goto-client-inventory w-full flex items-center gap-2 border rounded-lg p-2 pr-6 hover:border-blue-400 hover:bg-blue-50 text-left">
           ${c.logoUrl
-            ? `<img src="${c.logoUrl}" class="w-24 h-14 object-contain rounded" alt="${c.name} logo"/>`
-            : `<span class="text-4xl">🏢</span>`}
-          <span class="text-sm font-semibold text-slate-800 text-center">${c.name}</span>
+            ? `<img src="${c.logoUrl}" class="w-20 h-12 object-contain rounded shrink-0" alt="${c.name} logo"/>`
+            : `<span class="text-3xl shrink-0">🏢</span>`}
+          <span class="text-sm font-semibold text-slate-800">${c.name}</span>
         </button>
         <div class="grid grid-cols-3 gap-2 mt-3">
           ${whs.map(w => {
@@ -353,7 +359,7 @@ function bindHome() {
   });
   if (u.role !== "admin") return;
   document.getElementById("add-client-btn").onclick = () => {
-    draftNewClient = { name: "", contact: "", phone: "", address: "", logoUrl: "" };
+    draftNewClient = { name: "", contact: "", phone: "", address: "", logoUrl: "", warehouses: [...STANDARD_WAREHOUSE_NAMES] };
     navigateTo({ page: "client-new" });
   };
   document.querySelectorAll(".edit-client-btn").forEach(btn => {
@@ -371,60 +377,64 @@ function renderClientSettings() {
   const whs = warehousesOfClient(c.id);
 
   return `
-  <div class="flex items-center gap-3 mb-4">
-    ${c.logoUrl
-      ? `<img src="${c.logoUrl}" class="w-40 h-14 object-contain rounded" alt="${c.name} logo"/>`
-      : `<span class="text-3xl">🏢</span>`}
-  </div>
-
-  <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl mb-6">
-    <p class="font-semibold text-sm text-slate-700 mb-3">LOGO</p>
-    <label class="inline-block border rounded-lg px-4 py-2 text-sm hover:bg-slate-100 cursor-pointer">
-      ${c.logoUrl ? "更換 LOGO" : "上傳 LOGO"}
-      <input type="file" accept="image/*" class="hidden set-logo-input" data-client="${c.id}"/>
-    </label>
-  </div>
-
-  <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl mb-6">
-    <p class="font-semibold text-sm text-slate-700 mb-3">公司資料</p>
-    <div class="grid grid-cols-2 gap-3 mb-3">
-      <div>
-        <label class="text-xs text-slate-500">聯絡人</label>
-        <input id="client-contact" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.contact || ""}" placeholder="聯絡人姓名"/>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-5xl items-stretch">
+    <div class="bg-white rounded-xl shadow-sm p-6 flex flex-col">
+      <p class="font-semibold text-sm text-slate-700 mb-3">LOGO</p>
+      <div class="flex items-center gap-3 mb-4">
+        ${c.logoUrl
+          ? `<img src="${c.logoUrl}" class="w-40 h-14 object-contain rounded" alt="${c.name} logo"/>`
+          : `<span class="text-3xl">🏢</span>`}
       </div>
-      <div>
-        <label class="text-xs text-slate-500">電話</label>
-        <input id="client-phone" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.phone || ""}" placeholder="聯絡電話"/>
+      <label class="inline-block border rounded-lg px-4 py-2 text-sm hover:bg-slate-100 cursor-pointer self-start">
+        ${c.logoUrl ? "更換 LOGO" : "上傳 LOGO"}
+        <input type="file" accept="image/*" class="hidden set-logo-input" data-client="${c.id}"/>
+      </label>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm p-6">
+      <div class="flex items-center justify-between mb-3">
+        <p class="font-semibold text-sm text-slate-700">倉庫管理</p>
+        <button id="add-warehouse-btn" class="text-xs text-blue-600 hover:underline">＋ 新增倉庫</button>
       </div>
+      <ul class="text-sm text-slate-600 space-y-2">
+        ${whs.map(w => `
+          <li class="flex items-center justify-between border rounded-lg px-3 py-2">
+            <span>📦 ${w.name}</span>
+            <span class="flex items-center gap-2">
+              <button data-rename-warehouse="${w.id}" class="rename-warehouse-btn text-xs text-blue-600 hover:underline">改名</button>
+              <button data-delete-warehouse="${w.id}" class="delete-warehouse-btn text-xs text-rose-500 hover:underline">刪除</button>
+            </span>
+          </li>`).join("") || `<li class="text-xs text-slate-400">尚無倉庫</li>`}
+      </ul>
     </div>
-    <div class="mb-3">
-      <label class="text-xs text-slate-500">地址</label>
-      <input id="client-address" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.address || ""}" placeholder="公司地址"/>
-    </div>
-    <button id="save-client-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">儲存</button>
-    <p id="client-settings-msg" class="text-xs hidden mt-2"></p>
-  </div>
 
-  <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl">
-    <div class="flex items-center justify-between mb-3">
-      <p class="font-semibold text-sm text-slate-700">倉庫管理</p>
-      <button id="add-warehouse-btn" class="text-xs text-blue-600 hover:underline">＋ 新增倉庫</button>
+    <div class="bg-white rounded-xl shadow-sm p-6 lg:col-span-2">
+      <p class="font-semibold text-sm text-slate-700 mb-3">公司資料</p>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label class="text-xs text-slate-500">聯絡人</label>
+          <input id="client-contact" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.contact || ""}" placeholder="聯絡人姓名"/>
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">電話</label>
+          <input id="client-phone" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.phone || ""}" placeholder="聯絡電話"/>
+        </div>
+      </div>
+      <div class="mb-3">
+        <label class="text-xs text-slate-500">地址</label>
+        <input id="client-address" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.address || ""}" placeholder="公司地址"/>
+      </div>
+      <button id="save-client-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">儲存</button>
+      <p id="client-settings-msg" class="text-xs hidden mt-2"></p>
     </div>
-    <ul class="text-sm text-slate-600 space-y-2">
-      ${whs.map(w => `
-        <li class="flex items-center justify-between border rounded-lg px-3 py-2">
-          <span>📦 ${w.name}</span>
-          <button data-delete-warehouse="${w.id}" class="delete-warehouse-btn text-xs text-rose-500 hover:underline">刪除</button>
-        </li>`).join("") || `<li class="text-xs text-slate-400">尚無倉庫</li>`}
-    </ul>
-  </div>
 
-  ${c.id !== HOST_CLIENT_ID ? `
-  <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl mt-6 border border-rose-200">
-    <p class="font-semibold text-sm text-rose-700 mb-2">刪除客戶</p>
-    <p class="text-xs text-slate-500 mb-3">若客戶旗下任一倉庫尚有庫存，需先清空庫存才能刪除；刪除後會一併移除旗下所有倉庫。</p>
-    <button id="delete-client-btn" class="border border-rose-300 text-rose-600 rounded-lg px-4 py-2 text-sm hover:bg-rose-50">刪除此客戶</button>
-  </div>` : ""}`;
+    ${c.id !== HOST_CLIENT_ID ? `
+    <div class="bg-white rounded-xl shadow-sm p-6 border border-rose-200 lg:col-span-2">
+      <p class="font-semibold text-sm text-rose-700 mb-2">刪除客戶</p>
+      <p class="text-xs text-slate-500 mb-3">若客戶旗下任一倉庫尚有庫存，需先清空庫存才能刪除；刪除後會一併移除旗下所有倉庫。</p>
+      <button id="delete-client-btn" class="border border-rose-300 text-rose-600 rounded-lg px-4 py-2 text-sm hover:bg-rose-50">刪除此客戶</button>
+    </div>` : ""}
+  </div>`;
 }
 
 function bindClientSettings() {
@@ -454,6 +464,17 @@ function bindClientSettings() {
     saveDB(db);
     render();
   };
+  document.querySelectorAll(".rename-warehouse-btn").forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.dataset.renameWarehouse;
+      const wh = db.warehouses.find(w => w.id === id);
+      const name = prompt("請輸入新的倉庫名稱", wh.name);
+      if (!name) return;
+      wh.name = name;
+      saveDB(db);
+      render();
+    };
+  });
   document.querySelectorAll(".delete-warehouse-btn").forEach(btn => {
     btn.onclick = () => {
       const id = btn.dataset.deleteWarehouse;
@@ -487,47 +508,65 @@ function bindClientSettings() {
 }
 
 // ---- 新增客戶（管理員：填寫資料、上傳 LOGO，建立後自動配置六個標準倉庫） ----
-let draftNewClient = { name: "", contact: "", phone: "", address: "", logoUrl: "" };
+let draftNewClient = { name: "", contact: "", phone: "", address: "", logoUrl: "", warehouses: [...STANDARD_WAREHOUSE_NAMES] };
 
 function renderClientNew() {
   const c = draftNewClient;
   return `
-  <div class="flex items-center gap-3 mb-4">
-    ${c.logoUrl
-      ? `<img src="${c.logoUrl}" class="w-40 h-14 object-contain rounded" alt="logo"/>`
-      : `<span class="text-3xl">🏢</span>`}
-  </div>
-
-  <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl mb-6">
-    <p class="font-semibold text-sm text-slate-700 mb-3">LOGO</p>
-    <label class="inline-block border rounded-lg px-4 py-2 text-sm hover:bg-slate-100 cursor-pointer">
-      ${c.logoUrl ? "更換 LOGO" : "上傳 LOGO"}
-      <input type="file" accept="image/*" class="hidden set-new-logo-input"/>
-    </label>
-  </div>
-
-  <div class="bg-white rounded-xl shadow-sm p-6 max-w-2xl">
-    <p class="font-semibold text-sm text-slate-700 mb-3">公司資料</p>
-    <div class="mb-3">
-      <label class="text-xs text-slate-500">客戶公司名稱</label>
-      <input id="new-client-name" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.name}" placeholder="必填"/>
-    </div>
-    <div class="grid grid-cols-2 gap-3 mb-3">
-      <div>
-        <label class="text-xs text-slate-500">聯絡人</label>
-        <input id="new-client-contact" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.contact}" placeholder="聯絡人姓名"/>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-5xl items-stretch">
+    <div class="bg-white rounded-xl shadow-sm p-6 flex flex-col">
+      <p class="font-semibold text-sm text-slate-700 mb-3">LOGO</p>
+      <div class="flex items-center gap-3 mb-4">
+        ${c.logoUrl
+          ? `<img src="${c.logoUrl}" class="w-40 h-14 object-contain rounded" alt="logo"/>`
+          : `<span class="text-3xl">🏢</span>`}
       </div>
-      <div>
-        <label class="text-xs text-slate-500">電話</label>
-        <input id="new-client-phone" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.phone}" placeholder="聯絡電話"/>
+      <label class="inline-block border rounded-lg px-4 py-2 text-sm hover:bg-slate-100 cursor-pointer self-start">
+        ${c.logoUrl ? "更換 LOGO" : "上傳 LOGO"}
+        <input type="file" accept="image/*" class="hidden set-new-logo-input"/>
+      </label>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm p-6">
+      <div class="flex items-center justify-between mb-3">
+        <p class="font-semibold text-sm text-slate-700">倉庫管理</p>
+        <button id="add-new-client-warehouse-btn" class="text-xs text-blue-600 hover:underline">＋ 新增倉庫</button>
       </div>
+      <ul class="text-sm text-slate-600 space-y-2">
+        ${c.warehouses.map((name, i) => `
+          <li class="flex items-center justify-between border rounded-lg px-3 py-2">
+            <span>📦 ${name}</span>
+            <span class="flex items-center gap-2">
+              <button data-rename-new-warehouse="${i}" class="rename-new-client-warehouse-btn text-xs text-blue-600 hover:underline">改名</button>
+              <button data-remove-new-warehouse="${i}" class="remove-new-client-warehouse-btn text-xs text-rose-500 hover:underline">移除</button>
+            </span>
+          </li>`).join("") || `<li class="text-xs text-slate-400">尚無倉庫</li>`}
+      </ul>
     </div>
-    <div class="mb-3">
-      <label class="text-xs text-slate-500">地址</label>
-      <input id="new-client-address" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.address}" placeholder="公司地址"/>
+
+    <div class="bg-white rounded-xl shadow-sm p-6 lg:col-span-2">
+      <p class="font-semibold text-sm text-slate-700 mb-3">公司資料</p>
+      <div class="mb-3">
+        <label class="text-xs text-slate-500">客戶公司名稱</label>
+        <input id="new-client-name" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.name}" placeholder="必填"/>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label class="text-xs text-slate-500">聯絡人</label>
+          <input id="new-client-contact" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.contact}" placeholder="聯絡人姓名"/>
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">電話</label>
+          <input id="new-client-phone" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.phone}" placeholder="聯絡電話"/>
+        </div>
+      </div>
+      <div class="mb-3">
+        <label class="text-xs text-slate-500">地址</label>
+        <input id="new-client-address" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" value="${c.address}" placeholder="公司地址"/>
+      </div>
+      <button id="create-client-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">建立客戶</button>
+      <p id="new-client-msg" class="text-xs hidden mt-2"></p>
     </div>
-    <button id="create-client-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">建立客戶</button>
-    <p id="new-client-msg" class="text-xs hidden mt-2"></p>
   </div>`;
 }
 
@@ -557,12 +596,112 @@ function bindClientNew() {
       address: document.getElementById("new-client-address").value.trim(),
       logoUrl: draftNewClient.logoUrl || undefined,
     });
-    createStandardWarehouses(clientId);
+    draftNewClient.warehouses.forEach(whName => {
+      db.warehouses.push({ id: "w" + Date.now() + Math.random().toString(36).slice(2, 6), clientId, name: whName });
+    });
     saveDB(db);
-    draftNewClient = { name: "", contact: "", phone: "", address: "", logoUrl: "" };
+    draftNewClient = { name: "", contact: "", phone: "", address: "", logoUrl: "", warehouses: [...STANDARD_WAREHOUSE_NAMES] };
     view.page = "home";
     render();
   };
+  document.getElementById("add-new-client-warehouse-btn").onclick = () => {
+    const name = prompt("請輸入倉庫名稱");
+    if (!name) return;
+    draftNewClient.warehouses.push(name);
+    render();
+  };
+  document.querySelectorAll(".remove-new-client-warehouse-btn").forEach(btn => {
+    btn.onclick = () => {
+      draftNewClient.warehouses.splice(+btn.dataset.removeNewWarehouse, 1);
+      render();
+    };
+  });
+  document.querySelectorAll(".rename-new-client-warehouse-btn").forEach(btn => {
+    btn.onclick = () => {
+      const idx = +btn.dataset.renameNewWarehouse;
+      const name = prompt("請輸入新的倉庫名稱", draftNewClient.warehouses[idx]);
+      if (!name) return;
+      draftNewClient.warehouses[idx] = name;
+      render();
+    };
+  });
+}
+
+// ---- 客戶儀表板（庫存總覽頁面：某客戶的整體狀況） ----
+function isTodayTimestamp(timestamp) {
+  const todayPrefix = new Date().toLocaleString("zh-TW", { hour12: false }).split(" ")[0];
+  return timestamp.startsWith(todayPrefix);
+}
+
+function renderClientDashboard(client, whIds) {
+  const todayMovements = db.movements.filter(m => whIds.includes(m.warehouseId) && isTodayTimestamp(m.timestamp));
+  const todayIn = todayMovements.filter(m => m.type === "inbound").reduce((s, m) => s + m.delta, 0);
+  const todayOut = todayMovements.filter(m => m.type === "outbound").reduce((s, m) => s - m.delta, 0);
+  const todayTransfer = todayMovements.filter(m => m.type === "transfer_in" || m.type === "transfer_out").length;
+
+  const whs = warehousesOfClient(client.id);
+  const totalItems = db.products.filter(p => totalStock(p.id, whIds) > 0).length;
+  const lowStockItems = db.products.filter(p => {
+    const qty = totalStock(p.id, whIds);
+    return qty > 0 && qty < p.safetyStock;
+  }).length;
+
+  return `
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <div class="bg-white rounded-xl shadow-sm p-4">
+      <p class="text-xs text-slate-400">倉庫數</p>
+      <p class="text-2xl font-bold text-slate-800 mt-1">${whs.length}</p>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm p-4">
+      <p class="text-xs text-slate-400">在庫品項數</p>
+      <p class="text-2xl font-bold text-slate-800 mt-1">${totalItems}</p>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm p-4">
+      <p class="text-xs text-slate-400">低於安全庫存</p>
+      <p class="text-2xl font-bold ${lowStockItems ? "text-rose-600" : "text-slate-800"} mt-1">${lowStockItems}</p>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm p-4">
+      <p class="text-xs text-slate-400">今日異動</p>
+      <p class="text-2xl font-bold text-slate-800 mt-1">${todayMovements.length}</p>
+      <p class="text-[11px] text-slate-400 mt-0.5">入庫 +${todayIn}　出庫 -${todayOut}　調撥 ${todayTransfer}</p>
+    </div>
+  </div>
+
+  <p class="font-semibold text-sm text-slate-700 mb-2">各倉庫庫存狀況</p>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    ${whs.map(w => {
+      const itemCount = db.products.filter(p => stockOf(p.id, w.id) > 0).length;
+      const lowCount = db.products.filter(p => stockOf(p.id, w.id) > 0 && stockOf(p.id, w.id) < p.safetyStock).length;
+      const totalQty = db.products.reduce((s, p) => s + stockOf(p.id, w.id), 0);
+      return `
+      <button data-goto-warehouse="${w.id}" class="goto-warehouse-inventory bg-white rounded-xl shadow-sm p-3 text-left hover:ring-2 hover:ring-blue-400">
+        <p class="text-sm font-medium text-slate-700">📦 ${w.name}</p>
+        <p class="text-xs text-slate-400 mt-1">${itemCount} 個品項　共 ${totalQty} 件</p>
+        ${lowCount ? `<p class="text-xs text-rose-500 mt-0.5">⚠️ ${lowCount} 項低於安全庫存</p>` : ""}
+      </button>`;
+    }).join("") || `<p class="text-xs text-slate-400 col-span-4">尚無倉庫</p>`}
+  </div>
+
+  <p class="font-semibold text-sm text-slate-700 mb-2">今日異動明細</p>
+  <div class="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-left">
+        <tr><th class="px-4 py-2">時間</th><th class="px-4 py-2">倉庫</th><th class="px-4 py-2">類型</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">數量</th></tr>
+      </thead>
+      <tbody>
+        ${todayMovements.slice(0, 10).map(m => `
+          <tr class="border-t hover:bg-slate-50">
+            <td class="px-4 py-2 text-xs text-slate-500">${m.timestamp}</td>
+            <td class="px-4 py-2">${warehouseName(m.warehouseId)}</td>
+            <td class="px-4 py-2">${TYPE_LABEL[m.type] || m.type}</td>
+            <td class="px-4 py-2">${productName(m.productId)}</td>
+            <td class="px-4 py-2 font-semibold ${m.delta < 0 ? "text-rose-600" : "text-emerald-600"}">${m.delta > 0 ? "+" : ""}${m.delta}</td>
+          </tr>`).join("") || `<tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">今天還沒有異動</td></tr>`}
+      </tbody>
+    </table>
+  </div>
+
+  <p class="font-semibold text-sm text-slate-700 mb-2">完整庫存明細</p>`;
 }
 
 // ---- 庫存總覽 ----
@@ -591,15 +730,17 @@ function renderInventory() {
     groups[key].qty++;
   });
   const rows = Object.values(groups);
+  const isClientDashboard = headerClient && !filterWarehouseId;
 
   return `
   ${headerClient ? `
-  <div class="flex flex-col items-center mb-4">
+  <div class="flex items-center gap-2 mb-4">
     ${headerClient.logoUrl
-      ? `<img src="${headerClient.logoUrl}" class="w-24 h-14 object-contain rounded" alt="${headerClient.name} logo"/>`
-      : `<span class="text-3xl">🏢</span>`}
-    <p class="font-semibold text-slate-800 mt-1">${headerClient.name}</p>
+      ? `<img src="${headerClient.logoUrl}" class="w-20 h-12 object-contain rounded shrink-0" alt="${headerClient.name} logo"/>`
+      : `<span class="text-3xl shrink-0">🏢</span>`}
+    <p class="font-semibold text-slate-800">${headerClient.name}</p>
   </div>` : ""}
+  ${isClientDashboard ? renderClientDashboard(headerClient, whIds) : ""}
   <div class="bg-white rounded-xl shadow-sm overflow-hidden">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
@@ -623,6 +764,13 @@ function renderInventory() {
   </div>`;
 }
 
+function bindInventory() {
+  document.querySelectorAll(".goto-warehouse-inventory").forEach(btn => {
+    btn.onclick = () => {
+      navigateTo({ page: "inventory", filterWarehouseId: btn.dataset.gotoWarehouse, filterClientId: null });
+    };
+  });
+}
 
 // ---- 異動紀錄 ----
 function renderMovements() {
@@ -1177,6 +1325,7 @@ function bindLayout() {
   });
 
   if (view.page === "home") bindHome();
+  if (view.page === "inventory") bindInventory();
   if (view.page === "client-settings") bindClientSettings();
   if (view.page === "client-new") bindClientNew();
   if (view.page === "movements") bindMovements();
