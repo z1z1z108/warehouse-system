@@ -696,7 +696,7 @@ function renderClientDashboard(client, whIds) {
   <div class="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
-        <tr><th class="px-4 py-2">時間</th><th class="px-4 py-2">倉庫</th><th class="px-4 py-2">類型</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">數量</th></tr>
+        <tr><th class="px-4 py-2">時間</th><th class="px-4 py-2">倉庫</th><th class="px-4 py-2">類型</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">序號</th><th class="px-4 py-2">數量</th></tr>
       </thead>
       <tbody>
         ${todayMovements.slice(0, 10).map(m => `
@@ -704,9 +704,10 @@ function renderClientDashboard(client, whIds) {
             <td class="px-4 py-2 text-xs text-slate-500">${m.timestamp}</td>
             <td class="px-4 py-2">${warehouseName(m.warehouseId)}</td>
             <td class="px-4 py-2">${TYPE_LABEL[m.type] || m.type}</td>
-            <td class="px-4 py-2">${productName(m.productId)}</td>
+            <td class="px-4 py-2 font-mono text-xs">${productSkuOf(m.productId)}</td>
+            <td class="px-4 py-2 font-mono text-xs">${m.serialNo || "-"}</td>
             <td class="px-4 py-2 font-semibold ${m.delta < 0 ? "text-rose-600" : "text-emerald-600"}">${m.delta > 0 ? "+" : ""}${m.delta}</td>
-          </tr>`).join("") || `<tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">今天還沒有異動</td></tr>`}
+          </tr>`).join("") || `<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">今天還沒有異動</td></tr>`}
       </tbody>
     </table>
   </div>`;
