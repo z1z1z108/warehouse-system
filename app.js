@@ -778,26 +778,40 @@ function getFilteredInventoryRows() {
     ? [filterWarehouseId]
     : (isAdmin ? db.warehouses.map(w => w.id) : warehouseIdsOfClient(u.clientId));
 
-  const groups = {};
+  // 先算出每個「商品＋倉庫」的總數量，供安全庫存判斷用（不受下面拆分列的影響）
+  const totals = {};
   db.serialUnits.filter(s => whIds.includes(s.warehouseId)).forEach(s => {
     const key = s.productId + "|" + s.warehouseId;
-    if (!groups[key]) groups[key] = { product: db.products.find(p => p.id === s.productId), warehouseId: s.warehouseId, qty: 0 };
-    groups[key].qty++;
+    totals[key] = (totals[key] || 0) + 1;
   });
-  let rows = Object.values(groups);
+
+  // 每一台有序號的單位獨立成一行；無序號的單位合併成一行並顯示數量
+  const noSerialRows = {};
+  let rows = [];
+  db.serialUnits.filter(s => whIds.includes(s.warehouseId)).forEach(s => {
+    const key = s.productId + "|" + s.warehouseId;
+    const product = db.products.find(p => p.id === s.productId);
+    const totalQty = totals[key];
+    if (s.serialNo) {
+      rows.push({ product, warehouseId: s.warehouseId, serialNo: s.serialNo, qty: 1, totalQty });
+    } else {
+      if (!noSerialRows[key]) {
+        const row = { product, warehouseId: s.warehouseId, serialNo: null, qty: 0, totalQty };
+        noSerialRows[key] = row;
+        rows.push(row);
+      }
+      noSerialRows[key].qty++;
+    }
+  });
 
   inventoryFilter.warehouseIds = inventoryFilter.warehouseIds.filter(id => whIds.includes(id));
   const q = inventoryFilter.query.trim().toLowerCase();
   if (q) rows = rows.filter(r => r.product.sku.toLowerCase().includes(q) || r.product.name.toLowerCase().includes(q));
   const sq = inventoryFilter.serialQuery.trim().toLowerCase();
-  if (sq) {
-    rows = rows.filter(r =>
-      db.serialUnits.some(s => s.productId === r.product.id && s.warehouseId === r.warehouseId && s.serialNo && s.serialNo.toLowerCase().includes(sq))
-    );
-  }
+  if (sq) rows = rows.filter(r => r.serialNo && r.serialNo.toLowerCase().includes(sq));
   if (isAdmin && inventoryFilter.clientIds.length) rows = rows.filter(r => inventoryFilter.clientIds.includes(clientOfWarehouse(r.warehouseId)));
   if (inventoryFilter.warehouseIds.length) rows = rows.filter(r => inventoryFilter.warehouseIds.includes(r.warehouseId));
-  if (inventoryFilter.lowOnly) rows = rows.filter(r => r.qty < r.product.safetyStock);
+  if (inventoryFilter.lowOnly) rows = rows.filter(r => r.totalQty < r.product.safetyStock);
 
   return { rows, whIds, filterWarehouseId, isAdmin };
 }
@@ -848,21 +862,22 @@ function renderInventory() {
   <div class="bg-white rounded-xl shadow-sm overflow-hidden">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
-        <tr>${showClientCol ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">說明</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">狀態</th></tr>
+        <tr>${showClientCol ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">說明</th><th class="px-4 py-2">序號</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">狀態</th></tr>
       </thead>
       <tbody>
         ${rows.map(r => {
-          const low = r.qty < r.product.safetyStock;
+          const low = r.totalQty < r.product.safetyStock;
           return `
           <tr class="border-t hover:bg-slate-50">
             ${showClientCol ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(r.warehouseId))}</td>` : ""}
             <td class="px-4 py-2">${warehouseName(r.warehouseId)}</td>
             <td class="px-4 py-2 font-mono text-xs">${r.product.sku}</td>
             <td class="px-4 py-2">${r.product.name}</td>
+            <td class="px-4 py-2 font-mono text-xs">${r.serialNo || "-"}</td>
             <td class="px-4 py-2 font-semibold">${r.qty} ${r.product.unit}</td>
             <td class="px-4 py-2">${low ? `<span class="px-2 py-0.5 rounded-full text-xs bg-rose-100 text-rose-700">低於安全庫存</span>` : `<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">正常</span>`}</td>
           </tr>`;
-        }).join("") || `<tr><td colspan="${showClientCol ? 6 : 5}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的庫存資料</td></tr>`}
+        }).join("") || `<tr><td colspan="${showClientCol ? 7 : 6}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的庫存資料</td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -910,12 +925,12 @@ function bindInventory() {
 
 function exportInventoryCSV() {
   const { rows } = getFilteredInventoryRows();
-  const rowsOut = [["客戶", "倉庫", "Material", "Material description", "單位", "數量", "安全庫存", "狀態"]];
+  const rowsOut = [["客戶", "倉庫", "Material", "Material description", "序號", "單位", "數量", "安全庫存", "狀態"]];
   rows.forEach(r => {
-    const low = r.qty < r.product.safetyStock;
+    const low = r.totalQty < r.product.safetyStock;
     rowsOut.push([
       clientName(clientOfWarehouse(r.warehouseId)), warehouseName(r.warehouseId),
-      r.product.sku, r.product.name, r.product.unit, r.qty, r.product.safetyStock,
+      r.product.sku, r.product.name, r.serialNo || "", r.product.unit, r.qty, r.product.safetyStock,
       low ? "低於安全庫存" : "正常",
     ]);
   });
