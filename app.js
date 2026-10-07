@@ -766,7 +766,12 @@ function renderCheckboxFilterGroup(prefixClass, options, selectedIds, emptyLabel
 }
 
 // ---- 庫存總覽 ----
-let inventoryFilter = { query: "", serialQuery: "", warehouseIds: [], clientIds: [], lowOnly: false };
+let inventoryFilter = { query: "", serialQuery: "", warehouseIds: [], clientIds: [], categories: [], lowOnly: false };
+
+// 客戶篩選只在「震浤」看全部庫存、或點進震浤自己的倉庫時出現；點進其他公司的倉庫就不需要
+function canFilterByClient(isAdmin, filterWarehouseId) {
+  return isAdmin && (!filterWarehouseId || clientOfWarehouse(filterWarehouseId) === HOST_CLIENT_ID);
+}
 
 function getFilteredInventoryRows() {
   const u = currentUser();
@@ -804,28 +809,32 @@ function getFilteredInventoryRows() {
     }
   });
 
+  const categoryOptions = [...new Set(rows.map(r => r.product.category || "未分類"))].sort();
   inventoryFilter.warehouseIds = inventoryFilter.warehouseIds.filter(id => whIds.includes(id));
+  inventoryFilter.categories = inventoryFilter.categories.filter(c => categoryOptions.includes(c));
   const q = inventoryFilter.query.trim().toLowerCase();
   if (q) rows = rows.filter(r => r.product.sku.toLowerCase().includes(q) || r.product.name.toLowerCase().includes(q));
   const sq = inventoryFilter.serialQuery.trim().toLowerCase();
   if (sq) rows = rows.filter(r => r.serialNo && r.serialNo.toLowerCase().includes(sq));
-  if (isAdmin && inventoryFilter.clientIds.length) rows = rows.filter(r => inventoryFilter.clientIds.includes(clientOfWarehouse(r.warehouseId)));
+  if (canFilterByClient(isAdmin, filterWarehouseId) && inventoryFilter.clientIds.length) rows = rows.filter(r => inventoryFilter.clientIds.includes(clientOfWarehouse(r.warehouseId)));
   if (inventoryFilter.warehouseIds.length) rows = rows.filter(r => inventoryFilter.warehouseIds.includes(r.warehouseId));
+  if (inventoryFilter.categories.length) rows = rows.filter(r => inventoryFilter.categories.includes(r.product.category || "未分類"));
   if (inventoryFilter.lowOnly) rows = rows.filter(r => r.totalQty < r.product.safetyStock);
 
-  return { rows, whIds, filterWarehouseId, isAdmin };
+  return { rows, whIds, filterWarehouseId, isAdmin, categoryOptions };
 }
 
 function renderInventory() {
   const u = currentUser();
-  const { rows, whIds, filterWarehouseId, isAdmin } = getFilteredInventoryRows();
+  const { rows, whIds, filterWarehouseId, isAdmin, categoryOptions } = getFilteredInventoryRows();
   const showClientCol = isAdmin && !filterWarehouseId;
+  const showClientFilter = canFilterByClient(isAdmin, filterWarehouseId);
   const headerClientId = filterWarehouseId
     ? clientOfWarehouse(filterWarehouseId)
     : (!isAdmin ? u.clientId : null);
   const headerClient = headerClientId ? db.clients.find(c => c.id === headerClientId) : null;
 
-  const filterWarehouseOptions = buildWarehouseFilterOptions(whIds, isAdmin ? inventoryFilter.clientIds : []);
+  const filterWarehouseOptions = buildWarehouseFilterOptions(whIds, showClientFilter ? inventoryFilter.clientIds : []);
   const filterClientOptions = db.clients.map(c => ({ id: c.id, name: c.name }));
 
   return `
@@ -843,7 +852,7 @@ function renderInventory() {
       <label class="text-xs text-slate-500 mt-2 block">序號</label>
       <input id="inventory-filter-serial" class="border rounded-lg px-3 py-2 text-sm mt-1 w-56 block" value="${inventoryFilter.serialQuery}" placeholder="輸入序號"/>
     </div>
-    ${isAdmin ? `
+    ${showClientFilter ? `
     <div>
       <label class="text-xs text-slate-500">客戶（可複選）</label>
       <div class="mt-1">${renderCheckboxFilterGroup("inventory-filter-client-checkbox", filterClientOptions, inventoryFilter.clientIds, "尚無客戶")}</div>
@@ -852,6 +861,11 @@ function renderInventory() {
     <div>
       <label class="text-xs text-slate-500">倉庫（可複選）</label>
       <div class="mt-1">${renderCheckboxFilterGroup("inventory-filter-warehouse-checkbox", filterWarehouseOptions, inventoryFilter.warehouseIds, "尚無倉庫")}</div>
+    </div>` : ""}
+    ${categoryOptions.length ? `
+    <div>
+      <label class="text-xs text-slate-500">類別（可複選）</label>
+      <div class="mt-1">${renderCheckboxFilterGroup("inventory-filter-category-checkbox", categoryOptions.map(c => ({ id: c, name: c })), inventoryFilter.categories, "尚無類別")}</div>
     </div>` : ""}
     <label class="flex items-center gap-1.5 text-sm text-slate-600 py-2">
       <input type="checkbox" id="inventory-filter-low" ${inventoryFilter.lowOnly ? "checked" : ""}/> 只顯示低於安全庫存
@@ -862,7 +876,7 @@ function renderInventory() {
   <div class="bg-white rounded-xl shadow-sm overflow-hidden">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
-        <tr>${showClientCol ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">說明</th><th class="px-4 py-2">序號</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">狀態</th></tr>
+        <tr>${showClientCol ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">說明</th><th class="px-4 py-2">類別</th><th class="px-4 py-2">序號</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">狀態</th></tr>
       </thead>
       <tbody>
         ${rows.map(r => {
@@ -873,11 +887,12 @@ function renderInventory() {
             <td class="px-4 py-2">${warehouseName(r.warehouseId)}</td>
             <td class="px-4 py-2 font-mono text-xs">${r.product.sku}</td>
             <td class="px-4 py-2">${r.product.name}</td>
+            <td class="px-4 py-2">${r.product.category || "-"}</td>
             <td class="px-4 py-2 font-mono text-xs">${r.serialNo || "-"}</td>
             <td class="px-4 py-2 font-semibold">${r.qty} ${r.product.unit}</td>
             <td class="px-4 py-2">${low ? `<span class="px-2 py-0.5 rounded-full text-xs bg-rose-100 text-rose-700">低於安全庫存</span>` : `<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">正常</span>`}</td>
           </tr>`;
-        }).join("") || `<tr><td colspan="${showClientCol ? 7 : 6}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的庫存資料</td></tr>`}
+        }).join("") || `<tr><td colspan="${showClientCol ? 8 : 7}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的庫存資料</td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -912,12 +927,19 @@ function bindInventory() {
       render();
     };
   });
+  document.querySelectorAll(".inventory-filter-category-checkbox").forEach(cb => {
+    cb.onchange = (e) => {
+      if (e.target.checked) inventoryFilter.categories.push(e.target.value);
+      else inventoryFilter.categories = inventoryFilter.categories.filter(c => c !== e.target.value);
+      render();
+    };
+  });
   document.getElementById("inventory-filter-low").onchange = (e) => {
     inventoryFilter.lowOnly = e.target.checked;
     render();
   };
   document.getElementById("inventory-filter-clear-btn").onclick = () => {
-    inventoryFilter = { query: "", serialQuery: "", warehouseIds: [], clientIds: [], lowOnly: false };
+    inventoryFilter = { query: "", serialQuery: "", warehouseIds: [], clientIds: [], categories: [], lowOnly: false };
     render();
   };
   document.getElementById("inventory-export-btn").onclick = exportInventoryCSV;
@@ -925,12 +947,12 @@ function bindInventory() {
 
 function exportInventoryCSV() {
   const { rows } = getFilteredInventoryRows();
-  const rowsOut = [["客戶", "倉庫", "Material", "Material description", "序號", "單位", "數量", "安全庫存", "狀態"]];
+  const rowsOut = [["客戶", "倉庫", "Material", "Material description", "類別", "序號", "單位", "數量", "安全庫存", "狀態"]];
   rows.forEach(r => {
     const low = r.totalQty < r.product.safetyStock;
     rowsOut.push([
       clientName(clientOfWarehouse(r.warehouseId)), warehouseName(r.warehouseId),
-      r.product.sku, r.product.name, r.serialNo || "", r.product.unit, r.qty, r.product.safetyStock,
+      r.product.sku, r.product.name, r.product.category || "", r.serialNo || "", r.product.unit, r.qty, r.product.safetyStock,
       low ? "低於安全庫存" : "正常",
     ]);
   });
@@ -1420,6 +1442,14 @@ function renderProducts() {
       </div>
     </div>
     <div class="mb-3">
+      <label class="text-xs text-slate-500">類別（選填）</label>
+      <select id="new-category" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
+        <option value="">未分類</option>
+        <option value="設備">設備</option>
+        <option value="零件">零件</option>
+      </select>
+    </div>
+    <div class="mb-3">
       <label class="text-xs text-slate-500">Material description（料號說明，選填）</label>
       <input id="new-desc" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="選填，例：REV.K;CONTROL PANEL; ACS-AP-I MODULE"/>
     </div>
@@ -1434,7 +1464,7 @@ function renderProducts() {
   <div class="bg-white rounded-xl shadow-sm overflow-hidden">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
-        <tr><th class="px-4 py-2">所屬客戶</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">Material description</th><th class="px-4 py-2">單位</th><th class="px-4 py-2">安全庫存</th><th class="px-4 py-2">總庫存</th><th class="px-4 py-2"></th></tr>
+        <tr><th class="px-4 py-2">所屬客戶</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">Material description</th><th class="px-4 py-2">類別</th><th class="px-4 py-2">單位</th><th class="px-4 py-2">安全庫存</th><th class="px-4 py-2">總庫存</th><th class="px-4 py-2"></th></tr>
       </thead>
       <tbody>
         ${db.products.map(p => `
@@ -1442,11 +1472,12 @@ function renderProducts() {
             <td class="px-4 py-2">${clientName(p.clientId)}</td>
             <td class="px-4 py-2 font-mono text-xs">${p.sku}</td>
             <td class="px-4 py-2">${p.name}</td>
+            <td class="px-4 py-2">${p.category || "-"}</td>
             <td class="px-4 py-2">${p.unit}</td>
             <td class="px-4 py-2">${p.safetyStock}</td>
             <td class="px-4 py-2 font-semibold">${totalStock(p.id)}</td>
             <td class="px-4 py-2 text-right"><button data-delete-product="${p.id}" class="delete-product-btn text-rose-500 hover:underline text-xs">刪除</button></td>
-          </tr>`).join("") || `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">尚無料號</td></tr>`}
+          </tr>`).join("") || `<tr><td colspan="8" class="px-4 py-8 text-center text-slate-400">尚無料號</td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -1834,7 +1865,7 @@ function bindProducts() {
     if (!sku) { showMsg("product-msg", "請填寫料號", true); return; }
     if (db.products.some(p => p.sku === sku)) { showMsg("product-msg", "此料號已存在", true); return; }
 
-    db.products.push({ id: "p" + Date.now(), sku, name: desc || sku, unit, safetyStock, clientId });
+    db.products.push({ id: "p" + Date.now(), sku, name: desc || sku, unit, safetyStock, clientId, category: document.getElementById("new-category").value || undefined });
     saveDB(db);
     render();
   };
@@ -1854,8 +1885,8 @@ function bindProducts() {
 }
 
 function exportProductsCSV() {
-  const rows = [["所屬客戶", "Material", "Material description", "單位", "安全庫存", "總庫存"]];
-  db.products.forEach(p => rows.push([clientName(p.clientId), p.sku, p.name, p.unit, p.safetyStock, totalStock(p.id)]));
+  const rows = [["所屬客戶", "Material", "Material description", "類別", "單位", "安全庫存", "總庫存"]];
+  db.products.forEach(p => rows.push([clientName(p.clientId), p.sku, p.name, p.category || "", p.unit, p.safetyStock, totalStock(p.id)]));
   const csv = "﻿" + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const link = document.createElement("a");
