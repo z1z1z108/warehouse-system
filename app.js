@@ -787,14 +787,15 @@ function getFilteredInventoryRows() {
     const product = db.products.find(p => p.id === s.productId);
     const totalQty = totals[key];
     if (s.serialNo) {
-      rows.push({ product, warehouseId: s.warehouseId, serialNo: s.serialNo, qty: 1, totalQty });
+      rows.push({ product, warehouseId: s.warehouseId, serialNo: s.serialNo, qty: 1, totalQty, remark: s.remark || "" });
     } else {
       if (!noSerialRows[key]) {
-        const row = { product, warehouseId: s.warehouseId, serialNo: null, qty: 0, totalQty };
+        const row = { product, warehouseId: s.warehouseId, serialNo: null, qty: 0, totalQty, remark: "" };
         noSerialRows[key] = row;
         rows.push(row);
       }
       noSerialRows[key].qty++;
+      if (!noSerialRows[key].remark && s.remark) noSerialRows[key].remark = s.remark;
     }
   });
 
@@ -865,7 +866,7 @@ function renderInventory() {
   <div class="bg-white rounded-xl shadow-sm overflow-hidden">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
-        <tr>${showClientCol ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">說明</th><th class="px-4 py-2">類別</th><th class="px-4 py-2">序號</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">狀態</th></tr>
+        <tr>${showClientCol ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">說明</th><th class="px-4 py-2">類別</th><th class="px-4 py-2">序號</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">狀態</th><th class="px-4 py-2">備註</th></tr>
       </thead>
       <tbody>
         ${rows.map(r => {
@@ -880,8 +881,9 @@ function renderInventory() {
             <td class="px-4 py-2 font-mono text-xs">${r.serialNo || "-"}</td>
             <td class="px-4 py-2 font-semibold">${r.qty} ${r.product.unit}</td>
             <td class="px-4 py-2">${low ? `<span class="px-2 py-0.5 rounded-full text-xs bg-rose-100 text-rose-700">低於安全庫存</span>` : `<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">正常</span>`}</td>
+            <td class="px-4 py-2 text-slate-500">${r.remark || "-"}</td>
           </tr>`;
-        }).join("") || `<tr><td colspan="${showClientCol ? 8 : 7}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的庫存資料</td></tr>`}
+        }).join("") || `<tr><td colspan="${showClientCol ? 9 : 8}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的庫存資料</td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -936,13 +938,13 @@ function bindInventory() {
 
 function exportInventoryCSV() {
   const { rows } = getFilteredInventoryRows();
-  const rowsOut = [["客戶", "倉庫", "Material", "Material description", "類別", "序號", "單位", "數量", "安全庫存", "狀態"]];
+  const rowsOut = [["客戶", "倉庫", "Material", "Material description", "類別", "序號", "單位", "數量", "安全庫存", "狀態", "備註"]];
   rows.forEach(r => {
     const low = r.totalQty < r.product.safetyStock;
     rowsOut.push([
       clientName(clientOfWarehouse(r.warehouseId)), warehouseName(r.warehouseId),
       r.product.sku, r.product.name, r.product.category || "", r.serialNo || "", r.product.unit, r.qty, r.product.safetyStock,
-      low ? "低於安全庫存" : "正常",
+      low ? "低於安全庫存" : "正常", r.remark || "",
     ]);
   });
   const csv = "﻿" + rowsOut.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
