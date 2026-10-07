@@ -881,7 +881,7 @@ function renderInventory() {
             <td class="px-4 py-2 font-mono text-xs">${r.serialNo || "-"}</td>
             <td class="px-4 py-2 font-semibold">${r.qty} ${r.product.unit}</td>
             <td class="px-4 py-2">${low ? `<span class="px-2 py-0.5 rounded-full text-xs bg-rose-100 text-rose-700">低於安全庫存</span>` : `<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">正常</span>`}</td>
-            <td class="px-4 py-2 text-slate-500">${r.remark || "-"}</td>
+            <td class="px-4 py-2 text-slate-500">${r.remark || "-"}${isAdmin ? ` <button class="edit-remark-btn text-blue-600 hover:underline text-xs ml-1" data-product="${r.product.id}" data-warehouse="${r.warehouseId}" data-serial="${r.serialNo || ""}">編輯</button>` : ""}</td>
           </tr>`;
         }).join("") || `<tr><td colspan="${showClientCol ? 9 : 8}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的庫存資料</td></tr>`}
       </tbody>
@@ -934,6 +934,20 @@ function bindInventory() {
     render();
   };
   document.getElementById("inventory-export-btn").onclick = exportInventoryCSV;
+  document.querySelectorAll(".edit-remark-btn").forEach(btn => {
+    btn.onclick = () => {
+      const { product, warehouse, serial } = btn.dataset;
+      const units = db.serialUnits.filter(s => s.productId === product && s.warehouseId === warehouse && (serial ? s.serialNo === serial : !s.serialNo));
+      if (!units.length) return;
+      const current = units.find(s => s.remark)?.remark || "";
+      const input = prompt(serial ? `編輯序號 ${serial} 的備註（留空可清除）` : `編輯此批 ${units.length} 件的備註（留空可清除）`, current);
+      if (input === null) return;
+      const value = input.trim();
+      units.forEach(s => { if (value) s.remark = value; else delete s.remark; });
+      saveDB(db);
+      render();
+    };
+  });
 }
 
 function exportInventoryCSV() {
