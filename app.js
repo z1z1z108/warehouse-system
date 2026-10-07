@@ -332,7 +332,6 @@ function renderHome() {
   ${isAdmin ? `<div class="flex justify-end mb-4"><button id="add-client-btn" class="border rounded-xl px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">➕ 新增客戶</button></div>` : ""}
   <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
     ${clients.map(c => {
-      const whs = warehousesOfClient(c.id);
       return `
       <div class="bg-white rounded-xl shadow-sm p-4 relative">
         <div class="grid grid-cols-6 gap-2 items-stretch">
@@ -343,16 +342,6 @@ function renderHome() {
             <span class="text-sm font-semibold text-slate-800">${c.name}</span>
           </button>
           ${isAdmin ? `<button data-edit-client="${c.id}" class="edit-client-btn col-span-1 flex items-center justify-center border rounded-lg text-slate-400 hover:text-blue-600 hover:border-blue-400 hover:bg-blue-50 text-xl">⚙</button>` : ""}
-        </div>
-        <div class="grid grid-cols-3 gap-2 mt-3">
-          ${whs.map(w => {
-            const lowStock = db.products.some(p => stockOf(p.id, w.id) > 0 && stockOf(p.id, w.id) < p.safetyStock);
-            return `
-            <button data-goto-warehouse="${w.id}" class="goto-warehouse-inventory w-full flex flex-col items-center gap-0.5 border rounded-lg p-2 hover:bg-slate-50 hover:text-blue-600">
-              <span class="text-xl">📦${lowStock ? "⚠️" : ""}</span>
-              <span class="text-[11px] truncate w-full text-center">${w.name}</span>
-            </button>`;
-          }).join("") || `<p class="text-xs text-slate-400 col-span-3 text-center">尚無倉庫</p>`}
         </div>
       </div>`;
     }).join("") || `<p class="text-slate-400 text-sm">尚無資料</p>`}
