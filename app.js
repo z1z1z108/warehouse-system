@@ -887,6 +887,44 @@ function bindColumnFilters() {
   });
 }
 
+
+// ---- 共用：分頁（列表資料量大時，一次只畫一頁，避免畫面卡頓） ----
+const PAGE_SIZE = 100;
+const pageState = { inv: { page: 0, sig: "" }, mov: { page: 0, sig: "" } };
+
+function paginate(scope, rows, sig) {
+  const st = pageState[scope];
+  if (st.sig !== sig) { st.sig = sig; st.page = 0; }
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  if (st.page >= pages) st.page = pages - 1;
+  return { slice: rows.slice(st.page * PAGE_SIZE, (st.page + 1) * PAGE_SIZE), page: st.page, pages, total: rows.length };
+}
+
+function renderPager(scope, pg) {
+  if (pg.total <= PAGE_SIZE) return pg.total ? `<p class="text-xs text-slate-400 px-4 py-2 border-t">共 ${pg.total} 筆</p>` : "";
+  const btn = (dir, label, disabled) => `<button class="pager-btn border rounded-lg px-3 py-1 text-xs ${disabled ? "text-slate-300 cursor-not-allowed" : "hover:bg-slate-100"}" data-scope="${scope}" data-dir="${dir}" ${disabled ? "disabled" : ""}>${label}</button>`;
+  return `
+  <div class="flex items-center justify-between px-4 py-2 border-t text-xs text-slate-500">
+    <span>共 ${pg.total} 筆，每頁 ${PAGE_SIZE} 筆</span>
+    <div class="flex items-center gap-2">
+      ${btn(-1, "← 上一頁", pg.page === 0)}
+      <span>第 ${pg.page + 1} / ${pg.pages} 頁</span>
+      ${btn(1, "下一頁 →", pg.page >= pg.pages - 1)}
+    </div>
+  </div>`;
+}
+
+function bindPager() {
+  document.querySelectorAll(".pager-btn").forEach(btn => {
+    btn.onclick = () => {
+      pageState[btn.dataset.scope].page += +btn.dataset.dir;
+      render();
+      const main = document.querySelector("main");
+      if (main) main.scrollTop = 0;
+    };
+  });
+}
+
 // ---- 庫存總覽 ----
 let inventoryFilter = { skuQuery: "", nameQuery: "", serialQuery: "", remarkQuery: "", warehouseIds: [], clientIds: [], categories: [], statuses: [] };
 
@@ -915,9 +953,11 @@ function getFilteredInventoryRows() {
   // 每一台有序號的單位獨立成一行；無序號的單位合併成一行並顯示數量
   const noSerialRows = {};
   let rows = [];
-  db.serialUnits.filter(s => whIds.includes(s.warehouseId)).forEach(s => {
+  const productById = new Map(db.products.map(p => [p.id, p]));
+  const whIdSet = new Set(whIds);
+  db.serialUnits.filter(s => whIdSet.has(s.warehouseId)).forEach(s => {
     const key = s.productId + "|" + s.warehouseId;
-    const product = db.products.find(p => p.id === s.productId);
+    const product = productById.get(s.productId);
     const totalQty = totals[key];
     if (s.serialNo) {
       rows.push({ product, warehouseId: s.warehouseId, serialNo: s.serialNo, qty: 1, totalQty, remark: s.remark || "" });
@@ -961,6 +1001,7 @@ function renderInventory() {
     : (!isAdmin ? u.clientId : null);
   const headerClient = headerClientId ? db.clients.find(c => c.id === headerClientId) : null;
 
+  const pg = paginate("inv", rows, JSON.stringify(inventoryFilter) + "|" + (view.filterWarehouseId || ""));
   const filterWarehouseOptions = buildWarehouseFilterOptions(whIds, showClientFilter ? inventoryFilter.clientIds : []);
   const filterClientOptions = db.clients.map(c => ({ id: c.id, name: c.name }));
 
@@ -993,7 +1034,7 @@ function renderInventory() {
         </tr>
       </thead>
       <tbody>
-        ${rows.map(r => {
+        ${pg.slice.map(r => {
           const low = r.totalQty < r.product.safetyStock;
           return `
           <tr class="item-row-link border-t hover:bg-slate-50 cursor-pointer" data-product="${r.product.id}" data-warehouse="${r.warehouseId}" data-serial="${r.serialNo || ""}">
@@ -1010,12 +1051,14 @@ function renderInventory() {
         }).join("") || `<tr><td colspan="${showClientCol ? 9 : 8}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的庫存資料</td></tr>`}
       </tbody>
     </table>
+    ${renderPager("inv", pg)}
   </div>`;
 }
 
 function bindInventory() {
   bindColumnFilters();
   bindItemLinks();
+  bindPager();
   document.getElementById("inventory-filter-clear-btn").onclick = () => {
     colMenu = { id: null, search: "" };
     inventoryFilter = { skuQuery: "", nameQuery: "", serialQuery: "", remarkQuery: "", warehouseIds: [], clientIds: [], categories: [], statuses: [] };
@@ -1077,7 +1120,7 @@ function movementDateStr(m) {
 function getFilteredMovements() {
   const u = currentUser();
   const isAdmin = u.role === "admin";
-  let rows = [...visibleMovements()].sort((a, b) => b.id.localeCompare(a.id));
+  let rows = [...visibleMovements()].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
   if (movementsFilter.types.length) rows = rows.filter(m => movementsFilter.types.includes(m.type));
   if (isAdmin && movementsFilter.clientIds.length) rows = rows.filter(m => movementsFilter.clientIds.includes(clientOfWarehouse(m.warehouseId)));
   if (movementsFilter.warehouseIds.length) rows = rows.filter(m => movementsFilter.warehouseIds.includes(m.warehouseId));
@@ -1098,6 +1141,7 @@ function renderMovements() {
   const u = currentUser();
   const isAdmin = u.role === "admin";
   const rows = getFilteredMovements();
+  const pg = paginate("mov", rows, JSON.stringify(movementsFilter));
   const baseWarehouseIds = (isAdmin ? db.warehouses : warehousesOfClient(u.clientId)).map(w => w.id);
   const warehouseOptions = buildWarehouseFilterOptions(baseWarehouseIds, isAdmin ? movementsFilter.clientIds : []);
   const clientOptions = db.clients.map(c => ({ id: c.id, name: c.name }));
@@ -1126,7 +1170,7 @@ function renderMovements() {
         </tr>
       </thead>
       <tbody>
-        ${rows.map(m => `
+        ${pg.slice.map(m => `
           <tr class="item-row-link border-t hover:bg-slate-50 cursor-pointer" data-product="${m.productId}" data-warehouse="${m.warehouseId}" data-serial="${m.serialNo || ""}">
             <td class="px-4 py-2 text-xs text-slate-500">${m.timestamp}</td>
             ${u.role === "admin" ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(m.warehouseId))}</td>` : ""}
@@ -1141,6 +1185,7 @@ function renderMovements() {
           </tr>`).join("") || `<tr><td colspan="${u.role === "admin" ? 10 : 8}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的異動紀錄</td></tr>`}
       </tbody>
     </table>
+    ${renderPager("mov", pg)}
   </div>`;
 }
 
@@ -1802,6 +1847,7 @@ function bindMovements() {
   document.getElementById("export-btn")?.addEventListener("click", exportCSV);
   bindColumnFilters();
   bindItemLinks();
+  bindPager();
   document.getElementById("movements-filter-clear-btn").onclick = () => {
     colMenu = { id: null, search: "" };
     movementsFilter = { types: [], warehouseIds: [], clientIds: [], dateFrom: "", dateTo: "", skuQuery: "", nameQuery: "", serialQuery: "", noteQuery: "" };
