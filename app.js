@@ -1214,7 +1214,12 @@ function renderItemDetail() {
   const ownerId = product.clientId;
   const editBtn = (wid, sn) => isAdmin ? ` <button class="edit-remark-btn text-blue-600 hover:underline text-xs ml-1" data-product="${product.id}" data-warehouse="${wid}" data-serial="${sn || ""}">編輯</button>` : "";
 
+  const actions = !isAdmin ? "" : serial
+    ? (unit ? `<button class="detail-action border rounded-lg px-3 py-1.5 text-sm hover:bg-slate-100" data-action="outbound">📤 出庫此序號</button>
+        <button class="detail-action border rounded-lg px-3 py-1.5 text-sm hover:bg-slate-100" data-action="transfer">🔀 調撥此序號</button>` : "")
+    : `<button class="detail-action border rounded-lg px-3 py-1.5 text-sm hover:bg-slate-100" data-action="inbound">📥 入庫此料號</button>`;
   return `
+  ${actions ? `<div class="flex gap-2 mb-4">${actions}</div>` : ""}
   <div class="bg-white rounded-xl shadow-sm p-5 mb-4">
     <h3 class="text-sm font-bold text-slate-700 mb-3">料號資訊</h3>
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1241,20 +1246,20 @@ function renderItemDetail() {
   <div class="bg-white rounded-xl shadow-sm overflow-hidden mb-4">
     <h3 class="text-sm font-bold text-slate-700 px-5 pt-4 pb-2">各倉庫庫存</h3>
     <table class="w-full text-sm">
-      <thead class="bg-slate-100 text-slate-600 text-left"><tr>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">有序號</th><th class="px-4 py-2">無序號備註</th></tr></thead>
+      <thead class="bg-slate-100 text-slate-600 text-left"><tr>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">有序號</th><th class="px-4 py-2">無序號</th></tr></thead>
       <tbody>
         ${Object.entries(dist).map(([wid, d]) => `
         <tr class="border-t ${serial && unit && unit.warehouseId === wid ? "bg-blue-50" : ""}">
           ${isAdmin ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(wid))}</td>` : ""}
           <td class="px-4 py-2">${warehouseName(wid)}</td><td class="px-4 py-2 font-semibold">${d.qty} ${product.unit}</td><td class="px-4 py-2">${d.serials}</td>
-          <td class="px-4 py-2 text-slate-500">${d.qty - d.serials > 0 ? `${d.remark || "-"}${editBtn(wid, null)}` : "-"}</td>
+          <td class="px-4 py-2">${d.qty - d.serials}</td>
         </tr>`).join("") || `<tr><td colspan="5" class="px-4 py-6 text-center text-slate-400">目前沒有庫存</td></tr>`}
       </tbody>
     </table>
   </div>
-  ${!serial && units.some(s => s.serialNo) ? `
+  ${!serial && units.length ? `
   <div class="bg-white rounded-xl shadow-sm overflow-hidden mb-4">
-    <h3 class="text-sm font-bold text-slate-700 px-5 pt-4 pb-2">序號清單（${units.filter(s => s.serialNo).length} 台）</h3>
+    <h3 class="text-sm font-bold text-slate-700 px-5 pt-4 pb-2">序號清單（有序號 ${units.filter(s => s.serialNo).length} 台、無序號 ${units.filter(s => !s.serialNo).length} 件）</h3>
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left"><tr>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">序號</th><th class="px-4 py-2">備註</th></tr></thead>
       <tbody>
@@ -1262,8 +1267,15 @@ function renderItemDetail() {
         <tr class="border-t hover:bg-slate-50">
           ${isAdmin ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(s.warehouseId))}</td>` : ""}
           <td class="px-4 py-2">${warehouseName(s.warehouseId)}</td>
-          <td class="px-4 py-2 font-mono text-xs">${s.serialNo}</td>
+          <td class="px-4 py-2 font-mono text-xs"><button class="serial-link text-blue-600 hover:underline" data-product="${product.id}" data-warehouse="${s.warehouseId}" data-serial="${s.serialNo}">${s.serialNo}</button></td>
           <td class="px-4 py-2 text-slate-500">${s.remark || "-"}${editBtn(s.warehouseId, s.serialNo)}</td>
+        </tr>`).join("")}
+        ${Object.entries(dist).filter(([, d]) => d.qty - d.serials > 0).map(([wid, d]) => `
+        <tr class="border-t hover:bg-slate-50">
+          ${isAdmin ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(wid))}</td>` : ""}
+          <td class="px-4 py-2">${warehouseName(wid)}</td>
+          <td class="px-4 py-2 text-slate-500">無序號　× ${d.qty - d.serials} ${product.unit}</td>
+          <td class="px-4 py-2 text-slate-500">${d.remark || "-"}${editBtn(wid, null)}</td>
         </tr>`).join("")}
       </tbody>
     </table>
@@ -1305,7 +1317,45 @@ function editRemark(productId, warehouseId, serial) {
   render();
 }
 
+// 從明細頁帶著料號／序號直接開啟入庫、出庫、調撥表單
+function startMoveFromDetail(action) {
+  const product = db.products.find(p => p.id === view.itemProductId);
+  if (!product) return;
+  moveMenuOpen = true;
+  if (action === "inbound") {
+    const warehouseId = view.itemWarehouseId || warehousesOfClient(product.clientId)[0]?.id;
+    draftClientId = (warehouseId && clientOfWarehouse(warehouseId)) || product.clientId || db.clients[0]?.id;
+    draftWarehouseId = warehouseId || warehousesOfClient(draftClientId)[0]?.id;
+    draftMoveType = "inbound";
+    draftItems = [{ productId: product.id, serials: [], noSerial: false, qty: 1 }];
+    navigateTo({ page: "move-in" });
+    return;
+  }
+  const unit = db.serialUnits.find(s => s.productId === product.id && s.serialNo === view.itemSerial);
+  if (!unit) return;
+  const clientId = clientOfWarehouse(unit.warehouseId);
+  if (action === "outbound") {
+    draftClientId = clientId;
+    draftWarehouseId = unit.warehouseId;
+    draftMoveType = "outbound";
+    draftItems = [{ productId: product.id, serials: [unit.serialNo], qty: 0 }];
+    navigateTo({ page: "move-out" });
+  } else {
+    draftTransferClientId = clientId;
+    draftTransferFromWarehouseId = unit.warehouseId;
+    draftTransferToWarehouseId = (warehousesOfClient(clientId).find(w => w.id !== unit.warehouseId) || {}).id || unit.warehouseId;
+    draftTransferItems = [{ productId: product.id, serials: [unit.serialNo], qty: 0 }];
+    navigateTo({ page: "move-transfer" });
+  }
+}
+
 function bindItemDetail() {
+  document.querySelectorAll(".detail-action").forEach(btn => {
+    btn.onclick = () => startMoveFromDetail(btn.dataset.action);
+  });
+  document.querySelectorAll(".serial-link").forEach(btn => {
+    btn.onclick = () => navigateTo({ page: "item-detail", itemProductId: btn.dataset.product, itemWarehouseId: btn.dataset.warehouse, itemSerial: btn.dataset.serial });
+  });
   document.querySelectorAll(".edit-remark-btn").forEach(btn => {
     btn.onclick = () => editRemark(btn.dataset.product, btn.dataset.warehouse, btn.dataset.serial);
   });
