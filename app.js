@@ -87,9 +87,50 @@ function serialExistsAnywhere(serialNo) {
   return db.serialUnits.some(s => s.serialNo === serialNo);
 }
 
+// 日期工具：異動只記錄日期（格式 2026/10/8）；舊資料可能帶有時間，顯示時一律只取日期
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function isoToStamp(iso) {
+  const [y, m, d] = (iso || todayISO()).split("-");
+  return `${y}/${+m}/${+d}`;
+}
+function dateOnly(ts) { return (ts || "").split(" ")[0] || "-"; }
+function stampToISO(ts) {
+  const [y, m, d] = (ts || "").split(" ")[0].split("/");
+  return y && m && d ? `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}` : "";
+}
+// 這個單位「到達目前倉庫」的日期：入庫日期，若之後被調撥進來則為調入日期
+function arrivalISO(unit) { return stampToISO(unit.arrivedAt || unit.inboundAt); }
+
+// 出庫／調撥日期不能早於貨品入庫或調入的日期；回傳錯誤訊息，沒問題則回傳空字串
+function checkOutgoingDate(productId, warehouseId, serials, qty, dateISO) {
+  const iso = dateISO || todayISO();
+  for (const sn of serials) {
+    const unit = db.serialUnits.find(s => s.productId === productId && s.warehouseId === warehouseId && s.serialNo === sn);
+    const arrived = unit ? arrivalISO(unit) : "";
+    if (arrived && iso < arrived) return `序號 ${sn} 於 ${arrived.replace(/-/g, "/")} 才入庫／調入，日期不能早於這一天`;
+  }
+  if (qty > 0) {
+    const eligible = db.serialUnits.filter(s => s.productId === productId && s.warehouseId === warehouseId && !s.serialNo && (!arrivalISO(s) || arrivalISO(s) <= iso)).length;
+    if (eligible < qty) return `${productName(productId)} 在 ${iso.replace(/-/g, "/")} 以前入庫／調入的無序號庫存只有 ${eligible} 個，日期不能早於入庫或調入日期`;
+  }
+  return "";
+}
+
+// 無序號庫存先進先出：挑出「在指定日期前已到庫」且最早到庫的 qty 件
+function pickNonSerialUnits(productId, warehouseId, qty, iso) {
+  const cands = db.serialUnits
+    .filter(s => s.productId === productId && s.warehouseId === warehouseId && !s.serialNo)
+    .sort((a, b) => (arrivalISO(a) < arrivalISO(b) ? -1 : arrivalISO(a) > arrivalISO(b) ? 1 : 0));
+  const eligible = cands.filter(s => !arrivalISO(s) || arrivalISO(s) <= iso);
+  return (eligible.length >= qty ? eligible : cands).slice(0, qty);
+}
+
 // 有序號：一筆異動對應一台（qty 固定為 1）；無序號：一筆異動對應 qty 台，一起記錄數量
-function applyMovement(productId, warehouseId, type, serialNo, qty, note, operatorId) {
-  const timestamp = new Date().toLocaleString("zh-TW", { hour12: false });
+function applyMovement(productId, warehouseId, type, serialNo, qty, note, operatorId, dateISO) {
+  const timestamp = isoToStamp(dateISO);
   const sign = type === "outbound" ? -1 : 1;
   if (serialNo) {
     if (type === "inbound") {
@@ -103,14 +144,8 @@ function applyMovement(productId, warehouseId, type, serialNo, qty, note, operat
       db.serialUnits.push({ id: "s" + Date.now() + Math.random().toString(36).slice(2, 6) + i, productId, warehouseId, serialNo: null, inboundAt: timestamp });
     }
   } else {
-    let remaining = qty;
-    for (let i = db.serialUnits.length - 1; i >= 0 && remaining > 0; i--) {
-      const s = db.serialUnits[i];
-      if (s.productId === productId && s.warehouseId === warehouseId && !s.serialNo) {
-        db.serialUnits.splice(i, 1);
-        remaining--;
-      }
-    }
+    const ids = new Set(pickNonSerialUnits(productId, warehouseId, qty, dateISO || todayISO()).map(s => s.id));
+    db.serialUnits = db.serialUnits.filter(s => !ids.has(s.id));
   }
   db.movements.unshift({
     id: "m" + Date.now() + Math.random().toString(36).slice(2, 6),
@@ -120,20 +155,16 @@ function applyMovement(productId, warehouseId, type, serialNo, qty, note, operat
 }
 
 // 調撥：把庫存從一個倉庫移到另一個倉庫（同一台序號單位只是換倉庫，不是先出後入兩台）
-function applyTransfer(productId, fromWarehouseId, toWarehouseId, serialNo, qty, note, operatorId) {
-  const timestamp = new Date().toLocaleString("zh-TW", { hour12: false });
+function applyTransfer(productId, fromWarehouseId, toWarehouseId, serialNo, qty, note, operatorId, dateISO) {
+  const timestamp = isoToStamp(dateISO);
   if (serialNo) {
     const unit = db.serialUnits.find(s => s.productId === productId && s.warehouseId === fromWarehouseId && s.serialNo === serialNo);
-    if (unit) unit.warehouseId = toWarehouseId;
+    if (unit) { unit.warehouseId = toWarehouseId; unit.arrivedAt = timestamp; }
   } else {
-    let remaining = qty;
-    for (let i = db.serialUnits.length - 1; i >= 0 && remaining > 0; i--) {
-      const s = db.serialUnits[i];
-      if (s.productId === productId && s.warehouseId === fromWarehouseId && !s.serialNo) {
-        s.warehouseId = toWarehouseId;
-        remaining--;
-      }
-    }
+    pickNonSerialUnits(productId, fromWarehouseId, qty, dateISO || todayISO()).forEach(s => {
+      s.warehouseId = toWarehouseId;
+      s.arrivedAt = timestamp;
+    });
   }
   const groupId = "t" + Date.now() + Math.random().toString(36).slice(2, 6);
   const fromNote = `調撥至 ${warehouseName(toWarehouseId)}${note ? "；" + note : ""}`;
@@ -630,7 +661,7 @@ function bindClientNew() {
 
 // ---- 客戶儀表板（庫存總覽頁面：某客戶的整體狀況） ----
 function isTodayTimestamp(timestamp) {
-  const todayPrefix = new Date().toLocaleString("zh-TW", { hour12: false }).split(" ")[0];
+  const todayPrefix = isoToStamp(todayISO());
   return timestamp.startsWith(todayPrefix);
 }
 
@@ -687,12 +718,12 @@ function renderClientDashboard(client, whIds) {
   <div class="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
-        <tr><th class="px-4 py-2">時間</th><th class="px-4 py-2">倉庫</th><th class="px-4 py-2">類型</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">序號</th><th class="px-4 py-2">數量</th></tr>
+        <tr><th class="px-4 py-2">日期</th><th class="px-4 py-2">倉庫</th><th class="px-4 py-2">類型</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">序號</th><th class="px-4 py-2">數量</th></tr>
       </thead>
       <tbody>
         ${todayMovements.slice(0, 10).map(m => `
           <tr class="item-row-link border-t hover:bg-slate-50 cursor-pointer" data-product="${m.productId}" data-warehouse="${m.warehouseId}" data-serial="${m.serialNo || ""}">
-            <td class="px-4 py-2 text-xs text-slate-500">${m.timestamp}</td>
+            <td class="px-4 py-2 text-xs text-slate-500">${dateOnly(m.timestamp)}</td>
             <td class="px-4 py-2">${warehouseName(m.warehouseId)}</td>
             <td class="px-4 py-2">${TYPE_LABEL[m.type] || m.type}</td>
             <td class="px-4 py-2 font-mono text-xs">${productSkuOf(m.productId)}</td>
@@ -1098,6 +1129,9 @@ function bindGotoWarehouseButtons() {
 // ---- 異動紀錄 ----
 let movementsFilter = { types: [], warehouseIds: [], clientIds: [], dateFrom: "", dateTo: "", skuQuery: "", nameQuery: "", serialQuery: "", noteQuery: "" };
 
+function movementSortKey(m) { return movementDateStr(m) + "|" + m.id; }
+function byNewestMovement(a, b) { const x = movementSortKey(a), y = movementSortKey(b); return x < y ? 1 : x > y ? -1 : 0; }
+
 function movementDateStr(m) {
   const [datePart] = m.timestamp.split(" ");
   const [y, mo, d] = datePart.split("/");
@@ -1107,7 +1141,7 @@ function movementDateStr(m) {
 function getFilteredMovements() {
   const u = currentUser();
   const isAdmin = u.role === "admin";
-  let rows = [...visibleMovements()].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  let rows = [...visibleMovements()].sort(byNewestMovement);
   if (movementsFilter.types.length) rows = rows.filter(m => movementsFilter.types.includes(m.type));
   if (isAdmin && movementsFilter.clientIds.length) rows = rows.filter(m => movementsFilter.clientIds.includes(clientOfWarehouse(m.warehouseId)));
   if (movementsFilter.warehouseIds.length) rows = rows.filter(m => movementsFilter.warehouseIds.includes(m.warehouseId));
@@ -1144,7 +1178,7 @@ function renderMovements() {
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
         <tr>
-          ${renderHeaderFilter("mov", "time", "時間", "date", { from: movementsFilter.dateFrom, to: movementsFilter.dateTo, fromKey: "dateFrom", toKey: "dateTo" })}
+          ${renderHeaderFilter("mov", "time", "日期", "date", { from: movementsFilter.dateFrom, to: movementsFilter.dateTo, fromKey: "dateFrom", toKey: "dateTo" })}
           ${isAdmin ? renderHeaderFilter("mov", "clientIds", "客戶", "list", { options: clientOptions, selected: movementsFilter.clientIds }) : ""}
           ${renderHeaderFilter("mov", "warehouseIds", "倉庫", "list", { options: warehouseOptions, selected: movementsFilter.warehouseIds })}
           ${renderHeaderFilter("mov", "types", "類型", "list", { options: Object.entries(TYPE_LABEL).map(([id, name]) => ({ id, name })), selected: movementsFilter.types })}
@@ -1159,7 +1193,7 @@ function renderMovements() {
       <tbody>
         ${pg.slice.map(m => `
           <tr class="item-row-link border-t hover:bg-slate-50 cursor-pointer" data-product="${m.productId}" data-warehouse="${m.warehouseId}" data-serial="${m.serialNo || ""}">
-            <td class="px-4 py-2 text-xs text-slate-500">${m.timestamp}</td>
+            <td class="px-4 py-2 text-xs text-slate-500">${dateOnly(m.timestamp)}</td>
             ${u.role === "admin" ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(m.warehouseId))}</td>` : ""}
             <td class="px-4 py-2">${warehouseName(m.warehouseId)}</td>
             <td class="px-4 py-2">${TYPE_LABEL[m.type] || m.type}</td>
@@ -1202,7 +1236,7 @@ function renderItemDetail() {
   const unit = serial ? units.find(s => s.serialNo === serial) : null;
   const history = visibleMovements()
     .filter(m => m.productId === product.id && (!serial || m.serialNo === serial))
-    .sort((a, b) => b.id.localeCompare(a.id));
+    .sort(byNewestMovement);
   const dist = {};
   units.forEach(s => {
     const d = dist[s.warehouseId] || (dist[s.warehouseId] = { qty: 0, serials: 0, remark: "" });
@@ -1217,7 +1251,7 @@ function renderItemDetail() {
   const actions = !isAdmin ? "" : serial
     ? (unit ? `<button class="detail-action border rounded-lg px-3 py-1.5 text-sm hover:bg-slate-100" data-action="outbound">📤 出庫此序號</button>
         <button class="detail-action border rounded-lg px-3 py-1.5 text-sm hover:bg-slate-100" data-action="transfer">🔀 調撥此序號</button>` : "")
-    : `<button class="detail-action border rounded-lg px-3 py-1.5 text-sm hover:bg-slate-100" data-action="inbound">📥 入庫此料號</button>`;
+    : "";
   return `
   ${actions ? `<div class="flex gap-2 mb-4">${actions}</div>` : ""}
   <div class="bg-white rounded-xl shadow-sm p-5 mb-4">
@@ -1239,21 +1273,26 @@ function renderItemDetail() {
       ${info("序號", `<span class="font-mono">${serial}</span>`)}
       ${info("目前狀態", unit ? `<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">在庫</span>` : `<span class="px-2 py-0.5 rounded-full text-xs bg-slate-200 text-slate-600">已不在庫</span>`)}
       ${info("所在倉庫", unit ? `${clientName(clientOfWarehouse(unit.warehouseId))}－${warehouseName(unit.warehouseId)}` : "")}
-      ${info("入庫時間", unit && unit.inboundAt)}
+      ${info("入庫日期", unit && dateOnly(unit.inboundAt))}
       ${info("備註", unit ? `${unit.remark || "-"}${editBtn(unit.warehouseId, serial)}` : "")}
     </div>
   </div>` : ""}
   <div class="bg-white rounded-xl shadow-sm overflow-hidden mb-4">
     <h3 class="text-sm font-bold text-slate-700 px-5 pt-4 pb-2">各倉庫庫存</h3>
     <table class="w-full text-sm">
-      <thead class="bg-slate-100 text-slate-600 text-left"><tr>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">有序號</th><th class="px-4 py-2">無序號</th></tr></thead>
+      <thead class="bg-slate-100 text-slate-600 text-left"><tr>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">有序號</th><th class="px-4 py-2">無序號</th>${isAdmin && !serial ? `<th class="px-4 py-2">操作</th>` : ""}</tr></thead>
       <tbody>
         ${Object.entries(dist).map(([wid, d]) => `
         <tr class="border-t ${serial && unit && unit.warehouseId === wid ? "bg-blue-50" : ""}">
           ${isAdmin ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(wid))}</td>` : ""}
           <td class="px-4 py-2">${warehouseName(wid)}</td><td class="px-4 py-2 font-semibold">${d.qty} ${product.unit}</td><td class="px-4 py-2">${d.serials}</td>
           <td class="px-4 py-2">${d.qty - d.serials}</td>
-        </tr>`).join("") || `<tr><td colspan="5" class="px-4 py-6 text-center text-slate-400">目前沒有庫存</td></tr>`}
+          ${isAdmin && !serial ? `<td class="px-4 py-2 whitespace-nowrap">
+            <button class="wh-action text-blue-600 hover:underline text-xs" data-action="outbound" data-warehouse="${wid}">出庫</button>
+            <button class="wh-action text-blue-600 hover:underline text-xs ml-2" data-action="transfer" data-warehouse="${wid}">調撥</button>
+            <button class="wh-action text-blue-600 hover:underline text-xs ml-2" data-action="inbound" data-warehouse="${wid}">入庫</button>
+          </td>` : ""}
+        </tr>`).join("") || `<tr><td colspan="${isAdmin ? (serial ? 5 : 6) : 4}" class="px-4 py-6 text-center text-slate-400">目前沒有庫存</td></tr>`}
       </tbody>
     </table>
   </div>
@@ -1284,17 +1323,17 @@ function renderItemDetail() {
     <h3 class="text-sm font-bold text-slate-700 px-5 pt-4 pb-2">${serial ? "此序號的異動紀錄" : "此料號的所有異動紀錄"}（${history.length} 筆）</h3>
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left"><tr>
-        <th class="px-4 py-2">時間</th>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">類型</th>
+        <th class="px-4 py-2">日期</th>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">類型</th>
         <th class="px-4 py-2">序號</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">備註</th>${isAdmin ? `<th class="px-4 py-2">操作人</th>` : ""}
       </tr></thead>
       <tbody>
         ${history.map(m => `
         <tr class="border-t hover:bg-slate-50">
-          <td class="px-4 py-2 text-xs text-slate-500">${m.timestamp}</td>
+          <td class="px-4 py-2 text-xs text-slate-500">${dateOnly(m.timestamp)}</td>
           ${isAdmin ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(m.warehouseId))}</td>` : ""}
           <td class="px-4 py-2">${warehouseName(m.warehouseId)}</td>
           <td class="px-4 py-2">${TYPE_LABEL[m.type] || m.type}</td>
-          <td class="px-4 py-2 font-mono text-xs">${m.serialNo || "-"}</td>
+          <td class="px-4 py-2 font-mono text-xs">${m.serialNo && !serial ? `<button class="serial-link text-blue-600 hover:underline" data-product="${m.productId}" data-warehouse="${m.warehouseId}" data-serial="${m.serialNo}">${m.serialNo}</button>` : (m.serialNo || "-")}</td>
           <td class="px-4 py-2 font-semibold ${m.delta < 0 ? "text-rose-600" : "text-emerald-600"}">${m.delta > 0 ? "+" : ""}${m.delta}</td>
           <td class="px-4 py-2 text-slate-500">${m.note || "-"}</td>
           ${isAdmin ? `<td class="px-4 py-2">${userName(m.operatorId)}</td>` : ""}
@@ -1349,7 +1388,38 @@ function startMoveFromDetail(action) {
   }
 }
 
+// 從「各倉庫庫存」某一列帶著倉庫開啟入庫／出庫／調撥（無序號貨品用數量操作）
+function startMoveFromWarehouse(action, warehouseId) {
+  const product = db.products.find(p => p.id === view.itemProductId);
+  if (!product) return;
+  moveMenuOpen = true;
+  const clientId = clientOfWarehouse(warehouseId);
+  const qty = Math.min(1, nonSerialStockOf(product.id, warehouseId));
+  if (action === "inbound") {
+    draftClientId = clientId;
+    draftWarehouseId = warehouseId;
+    draftMoveType = "inbound";
+    draftItems = [{ productId: product.id, serials: [], noSerial: false, qty: 1 }];
+    navigateTo({ page: "move-in" });
+  } else if (action === "outbound") {
+    draftClientId = clientId;
+    draftWarehouseId = warehouseId;
+    draftMoveType = "outbound";
+    draftItems = [{ productId: product.id, serials: [], qty }];
+    navigateTo({ page: "move-out" });
+  } else {
+    draftTransferClientId = clientId;
+    draftTransferFromWarehouseId = warehouseId;
+    draftTransferToWarehouseId = (warehousesOfClient(clientId).find(w => w.id !== warehouseId) || {}).id || warehouseId;
+    draftTransferItems = [{ productId: product.id, serials: [], qty }];
+    navigateTo({ page: "move-transfer" });
+  }
+}
+
 function bindItemDetail() {
+  document.querySelectorAll(".wh-action").forEach(btn => {
+    btn.onclick = () => startMoveFromWarehouse(btn.dataset.action, btn.dataset.warehouse);
+  });
   document.querySelectorAll(".detail-action").forEach(btn => {
     btn.onclick = () => startMoveFromDetail(btn.dataset.action);
   });
@@ -1366,6 +1436,7 @@ let draftClientId = db.clients[0]?.id;
 let draftWarehouseId = warehousesOfClient(draftClientId)[0]?.id;
 let draftItems = [];
 let draftMoveType = null;
+let draftMoveDate = todayISO();
 
 function defaultDraftItem(type) {
   if (type === "outbound") {
@@ -1423,6 +1494,10 @@ function renderMoveForm(type) {
           ${clientWarehouses.map(w => `<option value="${w.id}" ${w.id === draftWarehouseId ? "selected" : ""}>${w.name}</option>`).join("")}
         </select>
       </div>
+    </div>
+    <div>
+      <label class="text-xs text-slate-500">異動日期</label>
+      <input type="date" id="move-date" value="${draftMoveDate}" class="w-full border rounded-lg px-3 py-2 text-sm mt-1"/>
     </div>
     <div>
       <label class="text-xs text-slate-500">備註</label>
@@ -1521,6 +1596,7 @@ let draftTransferClientId = db.clients[0]?.id;
 let draftTransferFromWarehouseId = warehousesOfClient(draftTransferClientId)[0]?.id;
 let draftTransferToWarehouseId = warehousesOfClient(draftTransferClientId)[1]?.id || draftTransferFromWarehouseId;
 let draftTransferItems = [];
+let draftTransferDate = todayISO();
 
 function defaultTransferItem() {
   const avail = db.products.find(p => stockOf(p.id, draftTransferFromWarehouseId) > 0);
@@ -1561,6 +1637,10 @@ function renderTransferForm() {
       </div>
     </div>
     ${sameWarehouse ? `<p class="text-xs text-rose-500">調出與調入倉庫不能相同</p>` : ""}
+    <div>
+      <label class="text-xs text-slate-500">異動日期</label>
+      <input type="date" id="transfer-date" value="${draftTransferDate}" class="w-full border rounded-lg px-3 py-2 text-sm mt-1"/>
+    </div>
     <div>
       <label class="text-xs text-slate-500">備註</label>
       <input id="transfer-note" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="選填"/>
@@ -1619,6 +1699,7 @@ function renderTransferForm() {
 }
 
 function bindTransferForm() {
+  document.getElementById("transfer-date").onchange = (e) => { draftTransferDate = e.target.value || todayISO(); };
   document.getElementById("transfer-client").onchange = (e) => {
     draftTransferClientId = e.target.value;
     const whs = warehousesOfClient(draftTransferClientId);
@@ -1700,20 +1781,23 @@ function bindTransferForm() {
         showMsg("transfer-msg", `無序號庫存不足：${productName(productId)} 僅剩 ${nonSerialAvail} 個`, true);
         return;
       }
+      const dateErr = checkOutgoingDate(productId, draftTransferFromWarehouseId, serials, qty, draftTransferDate);
+      if (dateErr) { showMsg("transfer-msg", dateErr, true); return; }
       items.push({ productId, serials, qty });
     }
 
     const u = currentUser();
     items.forEach(it => {
       it.serials.forEach(sn => {
-        applyTransfer(it.productId, draftTransferFromWarehouseId, draftTransferToWarehouseId, sn, 1, note, u.id);
+        applyTransfer(it.productId, draftTransferFromWarehouseId, draftTransferToWarehouseId, sn, 1, note, u.id, draftTransferDate);
       });
       if (it.qty > 0) {
-        applyTransfer(it.productId, draftTransferFromWarehouseId, draftTransferToWarehouseId, null, it.qty, note, u.id);
+        applyTransfer(it.productId, draftTransferFromWarehouseId, draftTransferToWarehouseId, null, it.qty, note, u.id, draftTransferDate);
       }
     });
     saveDB(db);
     resetTransferItems();
+    draftTransferDate = todayISO();
     view.page = "movements";
     render();
   });
@@ -1954,6 +2038,7 @@ function commitPendingSerialInputs() {
 
 function bindMoveForm(type) {
   const isOutbound = type === "outbound";
+  document.getElementById("move-date").onchange = (e) => { draftMoveDate = e.target.value || todayISO(); };
 
   document.getElementById("move-client").onchange = (e) => {
     resetDraftForClient(e.target.value, type);
@@ -2090,6 +2175,8 @@ function bindMoveForm(type) {
           showMsg("move-msg", `無序號庫存不足：${productName(productId)} 僅剩 ${nonSerialAvail} 個`, true);
           return;
         }
+        const dateErr = checkOutgoingDate(productId, draftWarehouseId, serials, qty, draftMoveDate);
+        if (dateErr) { showMsg("move-msg", dateErr, true); return; }
         items.push({ productId, serials, qty });
         continue;
       }
@@ -2119,14 +2206,15 @@ function bindMoveForm(type) {
     const u = currentUser();
     items.forEach(it => {
       it.serials.forEach(sn => {
-        applyMovement(it.productId, draftWarehouseId, type, sn, 1, note, u.id);
+        applyMovement(it.productId, draftWarehouseId, type, sn, 1, note, u.id, draftMoveDate);
       });
       if (it.qty > 0) {
-        applyMovement(it.productId, draftWarehouseId, type, null, it.qty, note, u.id);
+        applyMovement(it.productId, draftWarehouseId, type, null, it.qty, note, u.id, draftMoveDate);
       }
     });
     saveDB(db);
     resetDraftForClient(draftClientId, type);
+    draftMoveDate = todayISO();
     view.page = "movements";
     render();
   });
@@ -2206,9 +2294,9 @@ function bindAdmin() {
 
 // ---- CSV 匯出 ----
 function exportCSV() {
-  const rows = [["時間", "客戶", "倉庫", "類型", "Material", "Material description", "序號", "數量", "備註", "操作人"]];
+  const rows = [["日期", "客戶", "倉庫", "類型", "Material", "Material description", "序號", "數量", "備註", "操作人"]];
   getFilteredMovements().forEach(m => rows.push([
-    m.timestamp, clientName(clientOfWarehouse(m.warehouseId)), warehouseName(m.warehouseId),
+    dateOnly(m.timestamp), clientName(clientOfWarehouse(m.warehouseId)), warehouseName(m.warehouseId),
     TYPE_LABEL[m.type] || m.type, productSkuOf(m.productId), productName(m.productId), m.serialNo || "",
     m.delta, m.note || "", userName(m.operatorId),
   ]));
