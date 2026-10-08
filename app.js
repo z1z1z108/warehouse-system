@@ -294,7 +294,7 @@ function getPageTitle() {
       return "庫存總覽";
     }
     case "movements": return "異動紀錄";
-    case "item-detail": return "貨品明細";
+    case "item-detail": return view.itemSerial ? "貨品明細" : "料號明細";
     case "move-in": return "入庫（即時異動）";
     case "move-out": return "出庫（即時異動）";
     case "move-transfer": return "調撥（倉庫間移轉庫存）";
@@ -691,12 +691,12 @@ function renderClientDashboard(client, whIds) {
       </thead>
       <tbody>
         ${todayMovements.slice(0, 10).map(m => `
-          <tr class="border-t hover:bg-slate-50">
+          <tr class="item-row-link border-t hover:bg-slate-50 cursor-pointer" data-product="${m.productId}" data-warehouse="${m.warehouseId}" data-serial="${m.serialNo || ""}">
             <td class="px-4 py-2 text-xs text-slate-500">${m.timestamp}</td>
             <td class="px-4 py-2">${warehouseName(m.warehouseId)}</td>
             <td class="px-4 py-2">${TYPE_LABEL[m.type] || m.type}</td>
             <td class="px-4 py-2 font-mono text-xs">${productSkuOf(m.productId)}</td>
-            <td class="px-4 py-2 font-mono text-xs">${m.serialNo || "-"}</td>
+            <td class="px-4 py-2 font-mono text-xs ${m.serialNo ? "item-serial-cell text-blue-600 hover:underline" : ""}">${m.serialNo || "-"}</td>
             <td class="px-4 py-2 font-semibold ${m.delta < 0 ? "text-rose-600" : "text-emerald-600"}">${m.delta > 0 ? "+" : ""}${m.delta}</td>
           </tr>`).join("") || `<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">今天還沒有異動</td></tr>`}
       </tbody>
@@ -724,6 +724,7 @@ function renderDashboardPage() {
 
 function bindDashboardPage() {
   bindGotoWarehouseButtons();
+  bindItemLinks();
 }
 
 // ---- 共用：多選篩選核取方塊 ----
@@ -1043,7 +1044,7 @@ function renderInventory() {
             <td class="px-4 py-2 font-mono text-xs">${r.product.sku}</td>
             <td class="px-4 py-2">${r.product.name}</td>
             <td class="px-4 py-2">${r.product.category || "-"}</td>
-            <td class="px-4 py-2 font-mono text-xs">${r.serialNo || "-"}</td>
+            <td class="px-4 py-2 font-mono text-xs ${r.serialNo ? "item-serial-cell text-blue-600 hover:underline" : ""}">${r.serialNo || "-"}</td>
             <td class="px-4 py-2 font-semibold">${r.qty} ${r.product.unit}</td>
             <td class="px-4 py-2">${low ? `<span class="px-2 py-0.5 rounded-full text-xs bg-rose-100 text-rose-700">低於安全庫存</span>` : `<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">正常</span>`}</td>
             <td class="px-4 py-2 text-slate-500">${r.remark || "-"}${isAdmin ? ` <button class="edit-remark-btn text-blue-600 hover:underline text-xs ml-1" data-product="${r.product.id}" data-warehouse="${r.warehouseId}" data-serial="${r.serialNo || ""}">編輯</button>` : ""}</td>
@@ -1178,7 +1179,7 @@ function renderMovements() {
             <td class="px-4 py-2">${TYPE_LABEL[m.type] || m.type}</td>
             <td class="px-4 py-2 font-mono text-xs">${productSkuOf(m.productId)}</td>
             <td class="px-4 py-2">${productName(m.productId)}</td>
-            <td class="px-4 py-2 font-mono text-xs">${m.serialNo || "-"}</td>
+            <td class="px-4 py-2 font-mono text-xs ${m.serialNo ? "item-serial-cell text-blue-600 hover:underline" : ""}">${m.serialNo || "-"}</td>
             <td class="px-4 py-2 font-semibold ${m.delta < 0 ? "text-rose-600" : "text-emerald-600"}">${m.delta > 0 ? "+" : ""}${m.delta}</td>
             <td class="px-4 py-2 text-slate-500">${m.note || "-"}</td>
             ${u.role === "admin" ? `<td class="px-4 py-2">${userName(m.operatorId)}</td>` : ""}
@@ -1195,7 +1196,9 @@ function bindItemLinks() {
   document.querySelectorAll(".item-row-link").forEach(tr => {
     tr.onclick = (e) => {
       if (e.target.closest("button, a, input, label")) return;
-      navigateTo({ page: "item-detail", itemProductId: tr.dataset.product, itemWarehouseId: tr.dataset.warehouse, itemSerial: tr.dataset.serial || null });
+      // 點序號欄 → 貨品（序號）明細；點其他位置 → 料號明細
+      const onSerial = !!e.target.closest(".item-serial-cell");
+      navigateTo({ page: "item-detail", itemProductId: tr.dataset.product, itemWarehouseId: tr.dataset.warehouse, itemSerial: onSerial ? (tr.dataset.serial || null) : null });
     };
   });
 }
