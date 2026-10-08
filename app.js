@@ -1047,7 +1047,7 @@ function renderInventory() {
             <td class="px-4 py-2 font-mono text-xs ${r.serialNo ? "item-serial-cell text-blue-600 hover:underline" : ""}">${r.serialNo || "-"}</td>
             <td class="px-4 py-2 font-semibold">${r.qty} ${r.product.unit}</td>
             <td class="px-4 py-2">${low ? `<span class="px-2 py-0.5 rounded-full text-xs bg-rose-100 text-rose-700">低於安全庫存</span>` : `<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">正常</span>`}</td>
-            <td class="px-4 py-2 text-slate-500">${r.remark || "-"}${isAdmin ? ` <button class="edit-remark-btn text-blue-600 hover:underline text-xs ml-1" data-product="${r.product.id}" data-warehouse="${r.warehouseId}" data-serial="${r.serialNo || ""}">編輯</button>` : ""}</td>
+            <td class="px-4 py-2 text-slate-500">${r.remark || "-"}</td>
           </tr>`;
         }).join("") || `<tr><td colspan="${showClientCol ? 9 : 8}" class="px-4 py-8 text-center text-slate-400">尚無符合篩選條件的庫存資料</td></tr>`}
       </tbody>
@@ -1066,20 +1066,6 @@ function bindInventory() {
     render();
   };
   document.getElementById("inventory-export-btn").onclick = exportInventoryCSV;
-  document.querySelectorAll(".edit-remark-btn").forEach(btn => {
-    btn.onclick = () => {
-      const { product, warehouse, serial } = btn.dataset;
-      const units = db.serialUnits.filter(s => s.productId === product && s.warehouseId === warehouse && (serial ? s.serialNo === serial : !s.serialNo));
-      if (!units.length) return;
-      const current = units.find(s => s.remark)?.remark || "";
-      const input = prompt(serial ? `編輯序號 ${serial} 的備註（留空可清除）` : `編輯此批 ${units.length} 件的備註（留空可清除）`, current);
-      if (input === null) return;
-      const value = input.trim();
-      units.forEach(s => { if (value) s.remark = value; else delete s.remark; });
-      saveDB(db);
-      render();
-    };
-  });
 }
 
 function exportInventoryCSV() {
@@ -1219,12 +1205,14 @@ function renderItemDetail() {
     .sort((a, b) => b.id.localeCompare(a.id));
   const dist = {};
   units.forEach(s => {
-    const d = dist[s.warehouseId] || (dist[s.warehouseId] = { qty: 0, serials: 0 });
+    const d = dist[s.warehouseId] || (dist[s.warehouseId] = { qty: 0, serials: 0, remark: "" });
     d.qty++;
     if (s.serialNo) d.serials++;
+    else if (!d.remark && s.remark) d.remark = s.remark;
   });
   const info = (label, value) => `<div><p class="text-xs text-slate-500">${label}</p><p class="text-sm font-medium text-slate-800 mt-0.5">${value || value === 0 ? value : "-"}</p></div>`;
   const ownerId = product.clientId;
+  const editBtn = (wid, sn) => isAdmin ? ` <button class="edit-remark-btn text-blue-600 hover:underline text-xs ml-1" data-product="${product.id}" data-warehouse="${wid}" data-serial="${sn || ""}">編輯</button>` : "";
 
   return `
   <div class="bg-white rounded-xl shadow-sm p-5 mb-4">
@@ -1247,22 +1235,39 @@ function renderItemDetail() {
       ${info("目前狀態", unit ? `<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">在庫</span>` : `<span class="px-2 py-0.5 rounded-full text-xs bg-slate-200 text-slate-600">已不在庫</span>`)}
       ${info("所在倉庫", unit ? `${clientName(clientOfWarehouse(unit.warehouseId))}－${warehouseName(unit.warehouseId)}` : "")}
       ${info("入庫時間", unit && unit.inboundAt)}
-      ${info("備註", unit && unit.remark)}
+      ${info("備註", unit ? `${unit.remark || "-"}${editBtn(unit.warehouseId, serial)}` : "")}
     </div>
   </div>` : ""}
   <div class="bg-white rounded-xl shadow-sm overflow-hidden mb-4">
     <h3 class="text-sm font-bold text-slate-700 px-5 pt-4 pb-2">各倉庫庫存</h3>
     <table class="w-full text-sm">
-      <thead class="bg-slate-100 text-slate-600 text-left"><tr>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">有序號</th></tr></thead>
+      <thead class="bg-slate-100 text-slate-600 text-left"><tr>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">有序號</th><th class="px-4 py-2">無序號備註</th></tr></thead>
       <tbody>
         ${Object.entries(dist).map(([wid, d]) => `
         <tr class="border-t ${serial && unit && unit.warehouseId === wid ? "bg-blue-50" : ""}">
           ${isAdmin ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(wid))}</td>` : ""}
           <td class="px-4 py-2">${warehouseName(wid)}</td><td class="px-4 py-2 font-semibold">${d.qty} ${product.unit}</td><td class="px-4 py-2">${d.serials}</td>
-        </tr>`).join("") || `<tr><td colspan="4" class="px-4 py-6 text-center text-slate-400">目前沒有庫存</td></tr>`}
+          <td class="px-4 py-2 text-slate-500">${d.qty - d.serials > 0 ? `${d.remark || "-"}${editBtn(wid, null)}` : "-"}</td>
+        </tr>`).join("") || `<tr><td colspan="5" class="px-4 py-6 text-center text-slate-400">目前沒有庫存</td></tr>`}
       </tbody>
     </table>
   </div>
+  ${!serial && units.some(s => s.serialNo) ? `
+  <div class="bg-white rounded-xl shadow-sm overflow-hidden mb-4">
+    <h3 class="text-sm font-bold text-slate-700 px-5 pt-4 pb-2">序號清單（${units.filter(s => s.serialNo).length} 台）</h3>
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-left"><tr>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">序號</th><th class="px-4 py-2">備註</th></tr></thead>
+      <tbody>
+        ${units.filter(s => s.serialNo).map(s => `
+        <tr class="border-t hover:bg-slate-50">
+          ${isAdmin ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(s.warehouseId))}</td>` : ""}
+          <td class="px-4 py-2">${warehouseName(s.warehouseId)}</td>
+          <td class="px-4 py-2 font-mono text-xs">${s.serialNo}</td>
+          <td class="px-4 py-2 text-slate-500">${s.remark || "-"}${editBtn(s.warehouseId, s.serialNo)}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>
+  </div>` : ""}
   <div class="bg-white rounded-xl shadow-sm overflow-hidden">
     <h3 class="text-sm font-bold text-slate-700 px-5 pt-4 pb-2">${serial ? "此序號的異動紀錄" : "此料號的所有異動紀錄"}（${history.length} 筆）</h3>
     <table class="w-full text-sm">
@@ -1287,7 +1292,24 @@ function renderItemDetail() {
   </div>`;
 }
 
-function bindItemDetail() {}
+// 編輯備註：序號 → 只改該台；無序號 → 該倉庫此料號的整批庫存一起改
+function editRemark(productId, warehouseId, serial) {
+  const units = db.serialUnits.filter(s => s.productId === productId && s.warehouseId === warehouseId && (serial ? s.serialNo === serial : !s.serialNo));
+  if (!units.length) return;
+  const current = (units.find(s => s.remark) || {}).remark || "";
+  const input = prompt(serial ? `編輯序號 ${serial} 的備註（留空可清除）` : `編輯此批 ${units.length} 件的備註（留空可清除）`, current);
+  if (input === null) return;
+  const value = input.trim();
+  units.forEach(s => { if (value) s.remark = value; else delete s.remark; });
+  saveDB(db);
+  render();
+}
+
+function bindItemDetail() {
+  document.querySelectorAll(".edit-remark-btn").forEach(btn => {
+    btn.onclick = () => editRemark(btn.dataset.product, btn.dataset.warehouse, btn.dataset.serial);
+  });
+}
 
 // ---- 異動（管理員：即時入庫/出庫，需輸入序號） ----
 let draftClientId = db.clients[0]?.id;
