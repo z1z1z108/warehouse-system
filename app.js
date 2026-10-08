@@ -754,12 +754,129 @@ function renderCheckboxFilterGroup(prefixClass, options, selectedIds, emptyLabel
   </div>`;
 }
 
-// ---- 庫存總覽 ----
-let inventoryFilter = { query: "", serialQuery: "", warehouseIds: [], clientIds: [], categories: [], lowOnly: false };
 
-// 客戶篩選只在「震浤」看全部庫存、或點進震浤自己的倉庫時出現；點進其他公司的倉庫就不需要
+// ---- 共用：Excel 風格欄位標題篩選（點標題旁的 ▼ 展開選單） ----
+let colMenu = { id: null, search: "" };
+const COLUMN_FILTERS = { inv: () => inventoryFilter, mov: () => movementsFilter };
+
+// kind: "list"（核取清單，cfg.options/cfg.selected）、"text"（關鍵字，cfg.value）、"date"（日期區間，cfg.from/cfg.to）
+function renderHeaderFilter(scope, key, label, kind, cfg) {
+  const menuId = scope + ":" + key;
+  const open = colMenu.id === menuId;
+  const active = kind === "list" ? cfg.selected.length > 0 : kind === "text" ? !!cfg.value : !!(cfg.from || cfg.to);
+  let body = "";
+  if (open) {
+    if (kind === "list") {
+      const sq = colMenu.search.trim().toLowerCase();
+      const shown = cfg.options.filter(o => !sq || String(o.name).toLowerCase().includes(sq));
+      body = `
+        <input class="col-menu-search border rounded px-2 py-1 text-xs w-full" placeholder="搜尋選項" value="${colMenu.search}"/>
+        <div class="flex gap-3 text-xs my-1.5">
+          <button class="col-menu-all text-blue-600 hover:underline" data-scope="${scope}" data-key="${key}">全選</button>
+          <button class="col-menu-none text-blue-600 hover:underline" data-scope="${scope}" data-key="${key}">清除</button>
+        </div>
+        <div class="max-h-56 overflow-auto">
+          ${shown.map(o => `
+          <label class="flex items-center gap-1.5 text-xs py-0.5 cursor-pointer">
+            <input type="checkbox" class="col-menu-check" data-scope="${scope}" data-key="${key}" value="${o.id}" ${cfg.selected.includes(o.id) ? "checked" : ""}/>
+            <span class="truncate">${o.name}</span>
+          </label>`).join("") || `<p class="text-xs text-slate-400">沒有符合的選項</p>`}
+        </div>`;
+    } else if (kind === "text") {
+      body = `
+        <input class="col-menu-text border rounded px-2 py-1 text-xs w-full" data-scope="${scope}" data-key="${key}" placeholder="輸入關鍵字" value="${cfg.value}"/>
+        <button class="col-menu-text-clear text-xs text-blue-600 hover:underline mt-1.5" data-scope="${scope}" data-key="${key}">清除</button>`;
+    } else {
+      body = `
+        <label class="text-xs text-slate-500">日期起</label>
+        <input type="date" class="col-menu-date border rounded px-2 py-1 text-xs w-full mb-1.5" data-scope="${scope}" data-key="${cfg.fromKey}" value="${cfg.from}"/>
+        <label class="text-xs text-slate-500">日期迄</label>
+        <input type="date" class="col-menu-date border rounded px-2 py-1 text-xs w-full" data-scope="${scope}" data-key="${cfg.toKey}" value="${cfg.to}"/>
+        <button class="col-menu-date-clear text-xs text-blue-600 hover:underline mt-1.5" data-scope="${scope}" data-from="${cfg.fromKey}" data-to="${cfg.toKey}">清除</button>`;
+    }
+  }
+  return `
+  <th class="px-4 py-2 relative whitespace-nowrap">
+    <span>${label}</span>
+    <button class="col-filter-btn ml-1 text-xs ${active ? "text-blue-600" : "text-slate-400 hover:text-slate-600"}" data-menu="${menuId}" title="篩選${label}">${active ? "▼●" : "▼"}</button>
+    ${open ? `<div class="col-menu absolute z-30 left-0 top-full mt-1 bg-white border rounded-lg shadow-lg p-2 w-56 font-normal text-slate-700 whitespace-normal">${body}</div>` : ""}
+  </th>`;
+}
+
+function refocus(selector) {
+  const el = document.querySelector(selector);
+  if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+}
+
+let columnFilterOutsideBound = false;
+function bindColumnFilters() {
+  if (!columnFilterOutsideBound) {
+    columnFilterOutsideBound = true;
+    document.addEventListener("click", (e) => {
+      if (colMenu.id && !e.target.closest(".col-menu") && !e.target.closest(".col-filter-btn")) {
+        colMenu = { id: null, search: "" };
+        render();
+      }
+    });
+  }
+  document.querySelectorAll(".col-filter-btn").forEach(btn => {
+    btn.onclick = () => {
+      colMenu = colMenu.id === btn.dataset.menu ? { id: null, search: "" } : { id: btn.dataset.menu, search: "" };
+      render();
+      refocus(".col-menu-search, .col-menu-text");
+    };
+  });
+  const search = document.querySelector(".col-menu-search");
+  if (search) search.oninput = (e) => { colMenu.search = e.target.value; render(); refocus(".col-menu-search"); };
+  document.querySelectorAll(".col-menu-check").forEach(cb => {
+    cb.onchange = (e) => {
+      const f = COLUMN_FILTERS[cb.dataset.scope]();
+      const k = cb.dataset.key;
+      if (e.target.checked) f[k].push(e.target.value);
+      else f[k] = f[k].filter(v => v !== e.target.value);
+      render();
+    };
+  });
+  document.querySelectorAll(".col-menu-all, .col-menu-none").forEach(btn => {
+    btn.onclick = () => {
+      const f = COLUMN_FILTERS[btn.dataset.scope]();
+      const k = btn.dataset.key;
+      if (btn.classList.contains("col-menu-none")) f[k] = [];
+      else {
+        const shown = [...document.querySelectorAll(".col-menu-check")].map(c => c.value);
+        f[k] = [...new Set([...f[k], ...shown])];
+      }
+      render();
+    };
+  });
+  document.querySelectorAll(".col-menu-text").forEach(inp => {
+    inp.oninput = (e) => {
+      COLUMN_FILTERS[inp.dataset.scope]()[inp.dataset.key] = e.target.value;
+      render();
+      refocus(".col-menu-text");
+    };
+  });
+  document.querySelectorAll(".col-menu-text-clear").forEach(btn => {
+    btn.onclick = () => { COLUMN_FILTERS[btn.dataset.scope]()[btn.dataset.key] = ""; render(); };
+  });
+  document.querySelectorAll(".col-menu-date").forEach(inp => {
+    inp.onchange = (e) => { COLUMN_FILTERS[inp.dataset.scope]()[inp.dataset.key] = e.target.value; render(); };
+  });
+  document.querySelectorAll(".col-menu-date-clear").forEach(btn => {
+    btn.onclick = () => {
+      const f = COLUMN_FILTERS[btn.dataset.scope]();
+      f[btn.dataset.from] = ""; f[btn.dataset.to] = "";
+      render();
+    };
+  });
+}
+
+// ---- 庫存總覽 ----
+let inventoryFilter = { skuQuery: "", nameQuery: "", serialQuery: "", remarkQuery: "", warehouseIds: [], clientIds: [], categories: [], statuses: [] };
+
+// 客戶欄只在「震浤」看全部庫存時出現；點進任一公司的倉庫就不需要
 function canFilterByClient(isAdmin, filterWarehouseId) {
-  return isAdmin && (!filterWarehouseId || clientOfWarehouse(filterWarehouseId) === HOST_CLIENT_ID);
+  return isAdmin && !filterWarehouseId;
 }
 
 function getFilteredInventoryRows() {
@@ -802,14 +919,18 @@ function getFilteredInventoryRows() {
   const categoryOptions = [...new Set(rows.map(r => r.product.category || "未分類"))].sort();
   inventoryFilter.warehouseIds = inventoryFilter.warehouseIds.filter(id => whIds.includes(id));
   inventoryFilter.categories = inventoryFilter.categories.filter(c => categoryOptions.includes(c));
-  const q = inventoryFilter.query.trim().toLowerCase();
-  if (q) rows = rows.filter(r => r.product.sku.toLowerCase().includes(q) || r.product.name.toLowerCase().includes(q));
+  const skuQ = inventoryFilter.skuQuery.trim().toLowerCase();
+  if (skuQ) rows = rows.filter(r => r.product.sku.toLowerCase().includes(skuQ));
+  const nameQ = inventoryFilter.nameQuery.trim().toLowerCase();
+  if (nameQ) rows = rows.filter(r => r.product.name.toLowerCase().includes(nameQ));
+  const remarkQ = inventoryFilter.remarkQuery.trim().toLowerCase();
+  if (remarkQ) rows = rows.filter(r => (r.remark || "").toLowerCase().includes(remarkQ));
   const sq = inventoryFilter.serialQuery.trim().toLowerCase();
   if (sq) rows = rows.filter(r => r.serialNo && r.serialNo.toLowerCase().includes(sq));
   if (canFilterByClient(isAdmin, filterWarehouseId) && inventoryFilter.clientIds.length) rows = rows.filter(r => inventoryFilter.clientIds.includes(clientOfWarehouse(r.warehouseId)));
   if (inventoryFilter.warehouseIds.length) rows = rows.filter(r => inventoryFilter.warehouseIds.includes(r.warehouseId));
   if (inventoryFilter.categories.length) rows = rows.filter(r => inventoryFilter.categories.includes(r.product.category || "未分類"));
-  if (inventoryFilter.lowOnly) rows = rows.filter(r => r.totalQty < r.product.safetyStock);
+  if (inventoryFilter.statuses.length) rows = rows.filter(r => inventoryFilter.statuses.includes(r.totalQty < r.product.safetyStock ? "low" : "ok"));
 
   return { rows, whIds, filterWarehouseId, isAdmin, categoryOptions };
 }
@@ -835,38 +956,25 @@ function renderInventory() {
       : `<span class="text-3xl shrink-0">🏢</span>`}
     <p class="font-semibold text-slate-800">${headerClient.name}</p>
   </div>` : ""}
-  <div class="bg-white rounded-xl shadow-sm p-4 mb-4 flex flex-wrap items-start gap-4">
-    <div>
-      <label class="text-xs text-slate-500">搜尋 Material / 說明</label>
-      <input id="inventory-filter-query" class="border rounded-lg px-3 py-2 text-sm mt-1 w-56 block" value="${inventoryFilter.query}" placeholder="輸入關鍵字"/>
-      <label class="text-xs text-slate-500 mt-2 block">序號</label>
-      <input id="inventory-filter-serial" class="border rounded-lg px-3 py-2 text-sm mt-1 w-56 block" value="${inventoryFilter.serialQuery}" placeholder="輸入序號"/>
-    </div>
-    ${showClientFilter ? `
-    <div>
-      <label class="text-xs text-slate-500">客戶（可複選）</label>
-      <div class="mt-1">${renderCheckboxFilterGroup("inventory-filter-client-checkbox", filterClientOptions, inventoryFilter.clientIds, "尚無客戶")}</div>
-    </div>` : ""}
-    ${filterWarehouseOptions.length > 1 ? `
-    <div>
-      <label class="text-xs text-slate-500">倉庫（可複選）</label>
-      <div class="mt-1">${renderCheckboxFilterGroup("inventory-filter-warehouse-checkbox", filterWarehouseOptions, inventoryFilter.warehouseIds, "尚無倉庫")}</div>
-    </div>` : ""}
-    ${categoryOptions.length ? `
-    <div>
-      <label class="text-xs text-slate-500">類別（可複選）</label>
-      <div class="mt-1">${renderCheckboxFilterGroup("inventory-filter-category-checkbox", categoryOptions.map(c => ({ id: c, name: c })), inventoryFilter.categories, "尚無類別")}</div>
-    </div>` : ""}
-    <label class="flex items-center gap-1.5 text-sm text-slate-600 py-2">
-      <input type="checkbox" id="inventory-filter-low" ${inventoryFilter.lowOnly ? "checked" : ""}/> 只顯示低於安全庫存
-    </label>
-    <button id="inventory-filter-clear-btn" class="text-xs text-blue-600 hover:underline py-2.5">清除篩選</button>
+  <div class="flex items-center gap-3 mb-3">
+    <p class="text-xs text-slate-500">點欄位標題旁的 ▼ 即可篩選</p>
+    <button id="inventory-filter-clear-btn" class="text-xs text-blue-600 hover:underline">清除篩選</button>
     <button id="inventory-export-btn" class="border rounded-lg text-sm px-3 py-2 hover:bg-slate-100 ml-auto">📊 匯出 CSV</button>
   </div>
-  <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+  <div class="bg-white rounded-xl shadow-sm">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
-        <tr>${showClientCol ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">說明</th><th class="px-4 py-2">類別</th><th class="px-4 py-2">序號</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">狀態</th><th class="px-4 py-2">備註</th></tr>
+        <tr>
+          ${showClientCol ? renderHeaderFilter("inv", "clientIds", "客戶", "list", { options: filterClientOptions, selected: inventoryFilter.clientIds }) : ""}
+          ${filterWarehouseOptions.length > 1 ? renderHeaderFilter("inv", "warehouseIds", "倉庫", "list", { options: filterWarehouseOptions, selected: inventoryFilter.warehouseIds }) : `<th class="px-4 py-2">倉庫</th>`}
+          ${renderHeaderFilter("inv", "skuQuery", "Material", "text", { value: inventoryFilter.skuQuery })}
+          ${renderHeaderFilter("inv", "nameQuery", "說明", "text", { value: inventoryFilter.nameQuery })}
+          ${renderHeaderFilter("inv", "categories", "類別", "list", { options: categoryOptions.map(c => ({ id: c, name: c })), selected: inventoryFilter.categories })}
+          ${renderHeaderFilter("inv", "serialQuery", "序號", "text", { value: inventoryFilter.serialQuery })}
+          <th class="px-4 py-2">數量</th>
+          ${renderHeaderFilter("inv", "statuses", "狀態", "list", { options: [{ id: "low", name: "低於安全庫存" }, { id: "ok", name: "正常" }], selected: inventoryFilter.statuses })}
+          ${renderHeaderFilter("inv", "remarkQuery", "備註", "text", { value: inventoryFilter.remarkQuery })}
+        </tr>
       </thead>
       <tbody>
         ${rows.map(r => {
@@ -890,47 +998,10 @@ function renderInventory() {
 }
 
 function bindInventory() {
-  document.getElementById("inventory-filter-query").oninput = (e) => {
-    inventoryFilter.query = e.target.value;
-    render();
-    const el = document.getElementById("inventory-filter-query");
-    el.focus();
-    el.setSelectionRange(el.value.length, el.value.length);
-  };
-  document.getElementById("inventory-filter-serial").oninput = (e) => {
-    inventoryFilter.serialQuery = e.target.value;
-    render();
-    const el = document.getElementById("inventory-filter-serial");
-    el.focus();
-    el.setSelectionRange(el.value.length, el.value.length);
-  };
-  document.querySelectorAll(".inventory-filter-warehouse-checkbox").forEach(cb => {
-    cb.onchange = (e) => {
-      if (e.target.checked) inventoryFilter.warehouseIds.push(e.target.value);
-      else inventoryFilter.warehouseIds = inventoryFilter.warehouseIds.filter(id => id !== e.target.value);
-      render();
-    };
-  });
-  document.querySelectorAll(".inventory-filter-client-checkbox").forEach(cb => {
-    cb.onchange = (e) => {
-      if (e.target.checked) inventoryFilter.clientIds.push(e.target.value);
-      else inventoryFilter.clientIds = inventoryFilter.clientIds.filter(id => id !== e.target.value);
-      render();
-    };
-  });
-  document.querySelectorAll(".inventory-filter-category-checkbox").forEach(cb => {
-    cb.onchange = (e) => {
-      if (e.target.checked) inventoryFilter.categories.push(e.target.value);
-      else inventoryFilter.categories = inventoryFilter.categories.filter(c => c !== e.target.value);
-      render();
-    };
-  });
-  document.getElementById("inventory-filter-low").onchange = (e) => {
-    inventoryFilter.lowOnly = e.target.checked;
-    render();
-  };
+  bindColumnFilters();
   document.getElementById("inventory-filter-clear-btn").onclick = () => {
-    inventoryFilter = { query: "", serialQuery: "", warehouseIds: [], clientIds: [], categories: [], lowOnly: false };
+    colMenu = { id: null, search: "" };
+    inventoryFilter = { skuQuery: "", nameQuery: "", serialQuery: "", remarkQuery: "", warehouseIds: [], clientIds: [], categories: [], statuses: [] };
     render();
   };
   document.getElementById("inventory-export-btn").onclick = exportInventoryCSV;
@@ -978,7 +1049,7 @@ function bindGotoWarehouseButtons() {
 }
 
 // ---- 異動紀錄 ----
-let movementsFilter = { type: "", warehouseIds: [], clientIds: [], dateFrom: "", dateTo: "", query: "", serialQuery: "" };
+let movementsFilter = { types: [], warehouseIds: [], clientIds: [], dateFrom: "", dateTo: "", skuQuery: "", nameQuery: "", serialQuery: "", noteQuery: "" };
 
 function movementDateStr(m) {
   const [datePart] = m.timestamp.split(" ");
@@ -990,19 +1061,17 @@ function getFilteredMovements() {
   const u = currentUser();
   const isAdmin = u.role === "admin";
   let rows = [...visibleMovements()].sort((a, b) => b.id.localeCompare(a.id));
-  if (movementsFilter.type) rows = rows.filter(m => m.type === movementsFilter.type);
+  if (movementsFilter.types.length) rows = rows.filter(m => movementsFilter.types.includes(m.type));
   if (isAdmin && movementsFilter.clientIds.length) rows = rows.filter(m => movementsFilter.clientIds.includes(clientOfWarehouse(m.warehouseId)));
   if (movementsFilter.warehouseIds.length) rows = rows.filter(m => movementsFilter.warehouseIds.includes(m.warehouseId));
   if (movementsFilter.dateFrom) rows = rows.filter(m => movementDateStr(m) >= movementsFilter.dateFrom);
   if (movementsFilter.dateTo) rows = rows.filter(m => movementDateStr(m) <= movementsFilter.dateTo);
-  const q = movementsFilter.query.trim().toLowerCase();
-  if (q) {
-    rows = rows.filter(m =>
-      productSkuOf(m.productId).toLowerCase().includes(q) ||
-      productName(m.productId).toLowerCase().includes(q) ||
-      (m.note || "").toLowerCase().includes(q)
-    );
-  }
+  const skuQ = movementsFilter.skuQuery.trim().toLowerCase();
+  if (skuQ) rows = rows.filter(m => productSkuOf(m.productId).toLowerCase().includes(skuQ));
+  const nameQ = movementsFilter.nameQuery.trim().toLowerCase();
+  if (nameQ) rows = rows.filter(m => productName(m.productId).toLowerCase().includes(nameQ));
+  const noteQ = movementsFilter.noteQuery.trim().toLowerCase();
+  if (noteQ) rows = rows.filter(m => (m.note || "").toLowerCase().includes(noteQ));
   const sq = movementsFilter.serialQuery.trim().toLowerCase();
   if (sq) rows = rows.filter(m => (m.serialNo || "").toLowerCase().includes(sq));
   return rows;
@@ -1018,45 +1087,25 @@ function renderMovements() {
   movementsFilter.warehouseIds = movementsFilter.warehouseIds.filter(id => baseWarehouseIds.includes(id));
 
   return `
-  <div class="bg-white rounded-xl shadow-sm p-4 mb-4 flex flex-wrap items-start gap-4">
-    <div>
-      <label class="text-xs text-slate-500">搜尋 Material / 備註</label>
-      <input id="movements-filter-query" class="border rounded-lg px-3 py-2 text-sm mt-1 w-48 block" value="${movementsFilter.query}" placeholder="輸入關鍵字"/>
-      <label class="text-xs text-slate-500 mt-2 block">序號</label>
-      <input id="movements-filter-serial" class="border rounded-lg px-3 py-2 text-sm mt-1 w-48 block" value="${movementsFilter.serialQuery}" placeholder="輸入序號"/>
-    </div>
-    <div>
-      <label class="text-xs text-slate-500">類型</label>
-      <select id="movements-filter-type" class="border rounded-lg px-3 py-2 text-sm mt-1 block">
-        <option value="">全部類型</option>
-        ${Object.entries(TYPE_LABEL).map(([val, label]) => `<option value="${val}" ${movementsFilter.type === val ? "selected" : ""}>${label}</option>`).join("")}
-      </select>
-    </div>
-    ${isAdmin ? `
-    <div>
-      <label class="text-xs text-slate-500">客戶（可複選）</label>
-      <div class="mt-1">${renderCheckboxFilterGroup("movements-filter-client-checkbox", clientOptions, movementsFilter.clientIds, "尚無客戶")}</div>
-    </div>` : ""}
-    <div>
-      <label class="text-xs text-slate-500">倉庫（可複選）</label>
-      <div class="mt-1">${renderCheckboxFilterGroup("movements-filter-warehouse-checkbox", warehouseOptions, movementsFilter.warehouseIds, "尚無倉庫")}</div>
-    </div>
-    <div>
-      <label class="text-xs text-slate-500">日期起</label>
-      <input type="date" id="movements-filter-from" class="border rounded-lg px-3 py-2 text-sm mt-1 block" value="${movementsFilter.dateFrom}"/>
-      <label class="text-xs text-slate-500 mt-2 block">日期迄</label>
-      <input type="date" id="movements-filter-to" class="border rounded-lg px-3 py-2 text-sm mt-1 block" value="${movementsFilter.dateTo}"/>
-    </div>
-    <button id="movements-filter-clear-btn" class="text-xs text-blue-600 hover:underline py-2.5">清除篩選</button>
+  <div class="flex items-center gap-3 mb-3">
+    <p class="text-xs text-slate-500">點欄位標題旁的 ▼ 即可篩選</p>
+    <button id="movements-filter-clear-btn" class="text-xs text-blue-600 hover:underline">清除篩選</button>
     <button id="export-btn" class="border rounded-lg text-sm px-3 py-2 hover:bg-slate-100 ml-auto">📊 匯出 CSV</button>
   </div>
-  <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+  <div class="bg-white rounded-xl shadow-sm">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
         <tr>
-          <th class="px-4 py-2">時間</th>${u.role === "admin" ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th>
-          <th class="px-4 py-2">類型</th><th class="px-4 py-2">Material</th><th class="px-4 py-2">Material description</th><th class="px-4 py-2">序號</th>
-          <th class="px-4 py-2">數量</th><th class="px-4 py-2">備註</th>${u.role === "admin" ? `<th class="px-4 py-2">操作人</th>` : ""}
+          ${renderHeaderFilter("mov", "time", "時間", "date", { from: movementsFilter.dateFrom, to: movementsFilter.dateTo, fromKey: "dateFrom", toKey: "dateTo" })}
+          ${isAdmin ? renderHeaderFilter("mov", "clientIds", "客戶", "list", { options: clientOptions, selected: movementsFilter.clientIds }) : ""}
+          ${renderHeaderFilter("mov", "warehouseIds", "倉庫", "list", { options: warehouseOptions, selected: movementsFilter.warehouseIds })}
+          ${renderHeaderFilter("mov", "types", "類型", "list", { options: Object.entries(TYPE_LABEL).map(([id, name]) => ({ id, name })), selected: movementsFilter.types })}
+          ${renderHeaderFilter("mov", "skuQuery", "Material", "text", { value: movementsFilter.skuQuery })}
+          ${renderHeaderFilter("mov", "nameQuery", "Material description", "text", { value: movementsFilter.nameQuery })}
+          ${renderHeaderFilter("mov", "serialQuery", "序號", "text", { value: movementsFilter.serialQuery })}
+          <th class="px-4 py-2">數量</th>
+          ${renderHeaderFilter("mov", "noteQuery", "備註", "text", { value: movementsFilter.noteQuery })}
+          ${isAdmin ? `<th class="px-4 py-2">操作人</th>` : ""}
         </tr>
       </thead>
       <tbody>
@@ -1619,48 +1668,10 @@ function bindLayout() {
 
 function bindMovements() {
   document.getElementById("export-btn")?.addEventListener("click", exportCSV);
-  document.getElementById("movements-filter-query").oninput = (e) => {
-    movementsFilter.query = e.target.value;
-    render();
-    const el = document.getElementById("movements-filter-query");
-    el.focus();
-    el.setSelectionRange(el.value.length, el.value.length);
-  };
-  document.getElementById("movements-filter-serial").oninput = (e) => {
-    movementsFilter.serialQuery = e.target.value;
-    render();
-    const el = document.getElementById("movements-filter-serial");
-    el.focus();
-    el.setSelectionRange(el.value.length, el.value.length);
-  };
-  document.getElementById("movements-filter-type").onchange = (e) => {
-    movementsFilter.type = e.target.value;
-    render();
-  };
-  document.querySelectorAll(".movements-filter-warehouse-checkbox").forEach(cb => {
-    cb.onchange = (e) => {
-      if (e.target.checked) movementsFilter.warehouseIds.push(e.target.value);
-      else movementsFilter.warehouseIds = movementsFilter.warehouseIds.filter(id => id !== e.target.value);
-      render();
-    };
-  });
-  document.querySelectorAll(".movements-filter-client-checkbox").forEach(cb => {
-    cb.onchange = (e) => {
-      if (e.target.checked) movementsFilter.clientIds.push(e.target.value);
-      else movementsFilter.clientIds = movementsFilter.clientIds.filter(id => id !== e.target.value);
-      render();
-    };
-  });
-  document.getElementById("movements-filter-from").onchange = (e) => {
-    movementsFilter.dateFrom = e.target.value;
-    render();
-  };
-  document.getElementById("movements-filter-to").onchange = (e) => {
-    movementsFilter.dateTo = e.target.value;
-    render();
-  };
+  bindColumnFilters();
   document.getElementById("movements-filter-clear-btn").onclick = () => {
-    movementsFilter = { type: "", warehouseIds: [], clientIds: [], dateFrom: "", dateTo: "", query: "", serialQuery: "" };
+    colMenu = { id: null, search: "" };
+    movementsFilter = { types: [], warehouseIds: [], clientIds: [], dateFrom: "", dateTo: "", skuQuery: "", nameQuery: "", serialQuery: "", noteQuery: "" };
     render();
   };
 }
