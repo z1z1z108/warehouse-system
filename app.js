@@ -799,13 +799,26 @@ function renderHeaderFilter(scope, key, label, kind, cfg) {
   <th class="px-4 py-2 relative whitespace-nowrap">
     <span>${label}</span>
     <button class="col-filter-btn ml-1 text-xs ${active ? "text-blue-600" : "text-slate-400 hover:text-slate-600"}" data-menu="${menuId}" title="篩選${label}">${active ? "▼●" : "▼"}</button>
-    ${open ? `<div class="col-menu absolute z-30 left-0 top-full mt-1 bg-white border rounded-lg shadow-lg p-2 w-56 font-normal text-slate-700 whitespace-normal">${body}</div>` : ""}
+    ${open ? `<div class="col-menu absolute z-30 left-0 bottom-full mb-1 bg-white border rounded-lg shadow-lg p-2 w-56 font-normal text-slate-700 whitespace-normal">${body}</div>` : ""}
   </th>`;
+}
+
+// 選單固定往上展開；上方空間不夠（會被切掉）時，把表格往下推出足夠的空間，避免遮住下方資料
+function placeColumnMenu() {
+  const menu = document.querySelector(".col-menu");
+  if (!menu) return;
+  const scroller = menu.closest("main") || document.documentElement;
+  const topLimit = scroller === document.documentElement ? 0 : scroller.getBoundingClientRect().top;
+  const wrap = menu.closest("table").parentElement;
+  wrap.style.marginTop = "0px";
+  const deficit = topLimit - menu.getBoundingClientRect().top;
+  if (deficit > 0) wrap.style.marginTop = (deficit + 20) + "px"; // 上方工具列的 mb-3 會與此 margin 合併，所以多補 12px
 }
 
 function refocus(selector) {
   const el = document.querySelector(selector);
-  if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+  if (el) { el.focus({ preventScroll: true }); el.setSelectionRange(el.value.length, el.value.length); }
+  placeColumnMenu();
 }
 
 let columnFilterOutsideBound = false;
@@ -826,6 +839,7 @@ function bindColumnFilters() {
       refocus(".col-menu-search, .col-menu-text");
     };
   });
+  placeColumnMenu();
   const search = document.querySelector(".col-menu-search");
   if (search) search.oninput = (e) => { colMenu.search = e.target.value; render(); refocus(".col-menu-search"); };
   document.querySelectorAll(".col-menu-check").forEach(cb => {
