@@ -204,6 +204,17 @@ function render() {
   bindLayout();
 }
 
+// 登入頁的示範帳號按鈕：依目前資料庫裡實際存在的帳號產生（匯入備份後會自動帶出各客戶帳號）
+function renderDemoAccountButtons() {
+  const shortName = (id) => clientName(id).replace(/\s*[(（].*$/, "");
+  const admins = db.users.filter(u => u.role === "admin");
+  const clients = db.users.filter(u => u.role !== "admin");
+  return [
+    ...admins.map(u => `<button type="button" data-demo="${u.email}|${u.password}" class="demo-account-btn col-span-2 border rounded-lg py-1.5 text-xs hover:bg-slate-100 bg-slate-50 font-medium">${shortName(u.clientId) !== "-" ? shortName(u.clientId) : u.name}（管理員${u.clientId === HOST_CLIENT_ID ? "／本公司" : ""}）</button>`),
+    ...clients.map(u => `<button type="button" data-demo="${u.email}|${u.password}" class="demo-account-btn border rounded-lg py-1.5 text-xs hover:bg-slate-100">${shortName(u.clientId) !== "-" ? shortName(u.clientId) : u.name}</button>`),
+  ].join("");
+}
+
 // ---- 登入畫面 ----
 function renderLogin() {
   return `
@@ -220,11 +231,7 @@ function renderLogin() {
       <div class="mt-6 border-t pt-4">
         <p class="font-semibold text-slate-600 text-xs mb-2">示範帳號（點擊自動填入）</p>
         <div class="grid grid-cols-2 gap-2">
-          <button type="button" data-demo="zh@wms.com|zh123" class="demo-account-btn col-span-2 border rounded-lg py-1.5 text-xs hover:bg-slate-100 bg-slate-50 font-medium">震浤（管理員／本公司）</button>
-          <button type="button" data-demo="apd@wms.com|apd123" class="demo-account-btn border rounded-lg py-1.5 text-xs hover:bg-slate-100">亞源科技</button>
-          <button type="button" data-demo="fimer@wms.com|fimer123" class="demo-account-btn border rounded-lg py-1.5 text-xs hover:bg-slate-100">菲邁爾</button>
-          <button type="button" data-demo="sle@wms.com|sle123" class="demo-account-btn border rounded-lg py-1.5 text-xs hover:bg-slate-100">台灣所樂能源</button>
-          <button type="button" data-demo="auo@wms.com|auo123" class="demo-account-btn border rounded-lg py-1.5 text-xs hover:bg-slate-100">友達光電</button>
+          ${renderDemoAccountButtons()}
         </div>
       </div>
       <button id="show-help-btn" class="w-full text-center text-xs text-blue-600 hover:underline mt-4">📖 查看操作說明</button>
