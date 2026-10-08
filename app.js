@@ -1258,9 +1258,14 @@ function renderItemDetail() {
   const actions = !isAdmin ? "" : serial
     ? (unit ? `<button class="detail-action border rounded-lg px-3 py-1.5 text-sm hover:bg-slate-100" data-action="outbound">📤 出庫此序號</button>
         <button class="detail-action border rounded-lg px-3 py-1.5 text-sm hover:bg-slate-100" data-action="transfer">🔀 調撥此序號</button>` : "")
-    : "";
+    : (() => {
+      // 料號明細：直接開入庫／出庫／調撥表單，倉庫在表單裡再選
+      const hasStock = Object.keys(dist).length > 0;
+      const btn = (action, label, disabled) => `<button class="detail-action border rounded-lg px-3 py-1.5 text-sm ${disabled ? "text-slate-300 cursor-not-allowed" : "hover:bg-slate-100"}" data-action="${action}" ${disabled ? "disabled" : ""}>${label}</button>`;
+      return btn("inbound", "📥 入庫", false) + btn("outbound", "📤 出庫", !hasStock) + btn("transfer", "🔀 調撥", !hasStock);
+    })();
   return `
-  ${actions ? `<div class="flex gap-2 mb-4">${actions}</div>` : ""}
+  ${actions ? `<div class="flex flex-wrap items-center gap-2 mb-4">${actions}</div>` : ""}
   <div class="bg-white rounded-xl shadow-sm p-5 mb-4">
     <h3 class="text-sm font-bold text-slate-700 mb-3">料號資訊</h3>
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1287,19 +1292,14 @@ function renderItemDetail() {
   <div class="bg-white rounded-xl shadow-sm overflow-hidden mb-4">
     <h3 class="text-sm font-bold text-slate-700 px-5 pt-4 pb-2">各倉庫庫存</h3>
     <table class="w-full text-sm">
-      <thead class="bg-slate-100 text-slate-600 text-left"><tr>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">有序號</th><th class="px-4 py-2">無序號</th>${isAdmin && !serial ? `<th class="px-4 py-2">操作</th>` : ""}</tr></thead>
+      <thead class="bg-slate-100 text-slate-600 text-left"><tr>${isAdmin ? `<th class="px-4 py-2">客戶</th>` : ""}<th class="px-4 py-2">倉庫</th><th class="px-4 py-2">數量</th><th class="px-4 py-2">有序號</th><th class="px-4 py-2">無序號</th></tr></thead>
       <tbody>
         ${Object.entries(dist).map(([wid, d]) => `
         <tr class="border-t ${serial && unit && unit.warehouseId === wid ? "bg-blue-50" : ""}">
           ${isAdmin ? `<td class="px-4 py-2">${clientName(clientOfWarehouse(wid))}</td>` : ""}
           <td class="px-4 py-2">${warehouseName(wid)}</td><td class="px-4 py-2 font-semibold">${d.qty} ${product.unit}</td><td class="px-4 py-2">${d.serials}</td>
           <td class="px-4 py-2">${d.qty - d.serials}</td>
-          ${isAdmin && !serial ? `<td class="px-4 py-2 whitespace-nowrap">
-            <button class="wh-action text-blue-600 hover:underline text-xs" data-action="outbound" data-warehouse="${wid}">出庫</button>
-            <button class="wh-action text-blue-600 hover:underline text-xs ml-2" data-action="transfer" data-warehouse="${wid}">調撥</button>
-            <button class="wh-action text-blue-600 hover:underline text-xs ml-2" data-action="inbound" data-warehouse="${wid}">入庫</button>
-          </td>` : ""}
-        </tr>`).join("") || `<tr><td colspan="${isAdmin ? (serial ? 5 : 6) : 4}" class="px-4 py-6 text-center text-slate-400">目前沒有庫存</td></tr>`}
+        </tr>`).join("") || `<tr><td colspan="${isAdmin ? 5 : 4}" class="px-4 py-6 text-center text-slate-400">目前沒有庫存</td></tr>`}
       </tbody>
     </table>
   </div>
@@ -1396,9 +1396,14 @@ function startMoveFromDetail(action) {
 }
 
 // 從「各倉庫庫存」某一列帶著倉庫開啟入庫／出庫／調撥（無序號貨品用數量操作）
-function startMoveFromWarehouse(action, warehouseId) {
+function startMoveFromWarehouse(action) {
   const product = db.products.find(p => p.id === view.itemProductId);
   if (!product) return;
+  // 倉庫預設：點進來那一列的倉庫（出庫／調撥需有庫存），否則取第一個有庫存的倉庫；入庫沒有庫存時用該客戶第一個倉庫
+  const stocked = db.warehouses.filter(w => stockOf(product.id, w.id) > 0);
+  const preferred = view.itemWarehouseId && (action === "inbound" || stockOf(product.id, view.itemWarehouseId) > 0) ? view.itemWarehouseId : null;
+  const warehouseId = preferred || (stocked[0] || {}).id || (warehousesOfClient(product.clientId)[0] || {}).id;
+  if (!warehouseId) return;
   moveMenuOpen = true;
   const clientId = clientOfWarehouse(warehouseId);
   const qty = Math.min(1, nonSerialStockOf(product.id, warehouseId));
@@ -1424,11 +1429,10 @@ function startMoveFromWarehouse(action, warehouseId) {
 }
 
 function bindItemDetail() {
-  document.querySelectorAll(".wh-action").forEach(btn => {
-    btn.onclick = () => startMoveFromWarehouse(btn.dataset.action, btn.dataset.warehouse);
-  });
   document.querySelectorAll(".detail-action").forEach(btn => {
-    btn.onclick = () => startMoveFromDetail(btn.dataset.action);
+    btn.onclick = () => view.itemSerial
+      ? startMoveFromDetail(btn.dataset.action)
+      : startMoveFromWarehouse(btn.dataset.action);
   });
   document.querySelectorAll(".serial-link").forEach(btn => {
     btn.onclick = () => navigateTo({ page: "item-detail", itemProductId: btn.dataset.product, itemWarehouseId: btn.dataset.warehouse, itemSerial: btn.dataset.serial });
