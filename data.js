@@ -17,16 +17,45 @@ const DEFAULT_DB = {
   serialUnits: [],
   // 異動紀錄：每一筆入庫/出庫都是單一序號的異動，並記錄時間
   movements: [],
+  // 財務會計（僅震浤管理員可用）：發票、多帳戶流水帳、銀行帳戶、貸款，與庫存各自獨立
+  finance: { invoices: [], ledger: [], accounts: [], loans: [] },
 };
+
+// 補齊財務欄位，並把舊版（收款獨立存放、收支帳沒有帳戶）升級成「多帳戶流水帳」。可重複執行。
+function ensureFinanceData(d) {
+  if (!d.finance || typeof d.finance !== "object") d.finance = {};
+  const f = d.finance;
+  ["invoices", "ledger", "accounts", "loans"].forEach(k => { if (!Array.isArray(f[k])) f[k] = []; });
+  if (!f.accounts.length) f.accounts.push({ id: "acc-cash", name: "現金", type: "cash", openingBalance: 0 });
+  const defaultAccountId = f.accounts[0].id;
+  // 舊版的收款（payments）併入流水帳：一筆收款就是一筆「客戶入帳」
+  if (Array.isArray(f.payments)) {
+    f.payments.forEach(p => {
+      const allocations = p.invoiceId ? [{ invoiceId: p.invoiceId, amount: p.amount }] : [];
+      const e = f.ledger.find(x => x.paymentId === p.id || (p.ledgerId && x.id === p.ledgerId));
+      if (e) { e.clientId = p.clientId; e.allocations = allocations; }
+      else f.ledger.push({ id: p.ledgerId || ("led-" + p.id), date: p.date, type: "income", category: "營業收入", amount: p.amount, counterparty: "", note: p.note || "", clientId: p.clientId, allocations });
+    });
+    delete f.payments;
+  }
+  f.ledger.forEach(e => {
+    delete e.paymentId;
+    if (!e.accountId) e.accountId = defaultAccountId;
+    if (!Array.isArray(e.allocations)) e.allocations = [];
+  });
+  return d;
+}
 
 function loadDB() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_DB));
-    return JSON.parse(JSON.stringify(DEFAULT_DB));
+    const fresh = ensureFinanceData(JSON.parse(JSON.stringify(DEFAULT_DB)));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
+    return fresh;
   }
   const parsed = JSON.parse(raw);
   if (!parsed.serialUnits) parsed.serialUnits = [];
+  ensureFinanceData(parsed);
   // 補上新增的預設料號（依 Material 料號比對，不覆蓋既有資料），並補上舊料號缺少的所屬客戶
   DEFAULT_DB.products.forEach(defaultProduct => {
     const existing = parsed.products.find(p => p.sku === defaultProduct.sku);

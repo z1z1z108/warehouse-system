@@ -291,6 +291,7 @@ function renderLayout() {
           ` : ""}
         </div>` : ""}
         ${u.role === "admin" ? `<button data-nav="products" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">🏷 料號管理</button>` : ""}
+        ${renderFinanceNav()}
         ${u.role === "admin" ? `<button data-nav="admin" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">⚙ 管理後台</button>` : ""}
         <button data-nav="help" class="nav-btn w-full text-left px-3 py-2 rounded hover:bg-slate-700">📖 操作說明</button>
       </nav>
@@ -309,6 +310,7 @@ function renderLayout() {
 }
 
 function getPageTitle() {
+  if (view.page.startsWith("fin-")) return financeTitle();
   switch (view.page) {
     case "home": return "";
     case "client-settings": {
@@ -344,6 +346,7 @@ function getPageTitle() {
 }
 
 function renderPage() {
+  if (view.page.startsWith("fin-")) return renderFinancePage();
   switch (view.page) {
     case "home": return renderHome();
     case "client-settings": return renderClientSettings();
@@ -1998,7 +2001,9 @@ function bindLayout() {
     moveMenuOpen = !moveMenuOpen;
     render();
   });
+  bindFinanceNav();
 
+  if (view.page.startsWith("fin-")) bindFinancePage();
   if (view.page === "home") bindHome();
   if (view.page === "dashboard") bindDashboardPage();
   if (view.page === "inventory") bindInventory();
@@ -2291,6 +2296,7 @@ function bindAdmin() {
         const parsed = JSON.parse(reader.result);
         if (!parsed.users || !parsed.clients || !parsed.products) throw new Error("格式不符");
         if (!parsed.serialUnits) parsed.serialUnits = [];
+        ensureFinanceData(parsed);
         db = parsed;
         saveDB(db);
         showMsg("backup-msg", "匯入成功，資料已還原");

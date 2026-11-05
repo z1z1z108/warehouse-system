@@ -1,0 +1,836 @@
+// ============================================================
+// 財務會計（僅震浤管理員）— 核心、發票登錄、應收帳款與請款、財務報表
+// 銀行帳戶、多帳戶流水帳、核對、匯入、貸款在 finance-bank.js。
+//
+// 資料放在 db.finance：
+//   invoices : 進銷項發票
+//   ledger   : 多帳戶流水帳（每筆有 accountId；allocations 記錄它核對了哪些發票各多少錢）
+//   accounts : 銀行／現金帳戶
+//   loans    : 貸款（用來核對每月扣款）
+// 發票的「已收／已付」完全由流水帳的 allocations 算出來，不另外存。
+//
+// 使用 app.js 的全域物件：db、view、navigateTo、render、showMsg、todayISO、clientName、HOST_CLIENT_ID、saveDB(data.js)
+// 注意：本檔在 app.js 之前載入，頂層不可呼叫 app.js 的函式，一律在函式內使用。
+// ============================================================
+
+let financeMenuOpen = false;
+
+const FIN_PAGES = [
+  { page: "fin-invoices", icon: "📄", label: "發票登錄" },
+  { page: "fin-ledger", icon: "📒", label: "流水帳" },
+  { page: "fin-accounts", icon: "🏦", label: "銀行帳戶" },
+  { page: "fin-loans", icon: "🏛", label: "貸款管理" },
+  { page: "fin-ar", icon: "💳", label: "應收帳款" },
+  { page: "fin-reports", icon: "📊", label: "財務報表" },
+];
+// 子頁面在側邊欄要亮起的父項目
+const FIN_PARENT = { "fin-entry-edit": "fin-ledger", "fin-reconcile": "fin-ledger", "fin-import": "fin-ledger", "fin-loan-detail": "fin-loans", "fin-ar-detail": "fin-ar" };
+
+// 流水帳類別（順序照公司原本的分類）。「代收轉付」可收可付，所以收入、支出兩邊都列。
+const FIN_INCOME_CATEGORIES = ["營業收入", "罰金收入", "廢料收入", "業外收入", "貸款收入", "股票交割收入", "代收轉付"];
+const FIN_EXPENSE_CATEGORIES = [
+  "台南辦公室租金", "台中廠房", "影印機租金", "台南中華電信", "中部支出", "加油單", "事務所費用", "薪資支出",
+  "購買車輛貸款", "租賃車輛租金", "中信士傑貸(64期)", "合作金庫", "2022富邦", "2022台中商銀", "國泰世華", "2023第一銀行",
+  "健保費", "勞保費", "勞退費用", "保險費", "ETAG", "停車費", "運費", "非消耗性工具及材料", "消耗性工具及材料", "其他料件",
+  "工程費用", "大型設備", "車輛修繕", "辦公室修繕", "設備工具修繕", "出差費用", "餐費", "罰單", "郵資費", "辦公室事務用品",
+  "日常消耗品&食品", "手續費", "滯納金", "公共稅務支出", "證照及訓練費", "工讀生", "員工績效及福利",
+  "工程-行政事務費", "工程-工程設備費", "工程-五金材料費", "代收轉付", "業外支出或還款", "業外還款", "股票交割支出",
+];
+const FIN_RECEIPT_CATEGORY = "營業收入";     // 登錄客戶收款時，自動寫入流水帳的類別
+const FIN_TRANSFER_CATEGORY = "帳戶間轉帳";  // 自己帳戶之間轉帳：不算收入／支出，也不需要核對
+const FIN_TAX_RATE = 0.05;
+
+let finInvFilter = { kind: "", status: "", month: "", q: "" };
+let finInvDraft = { kind: "sales", date: "", clientId: "", taxType: "taxable" };
+let finReportYear = new Date().getFullYear();
+let finReportAccount = "";
+
+// ---------- 共用工具 ----------
+function canUseFinance() {
+  const u = currentUser();
+  return !!u && u.role === "admin" && (!u.clientId || u.clientId === HOST_CLIENT_ID);
+}
+function finEsc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
+function finMoney(n) { return Number(n || 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 }); }
+function finId(prefix) { return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+function finMonthOf(iso) { return (iso || "").slice(0, 7); }
+function finDaysSince(iso) {
+  if (!iso) return 0;
+  const [y, m, d] = iso.split("-").map(Number);
+  const now = new Date();
+  return Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(y, m - 1, d)) / 86400000);
+}
+function finClients() { return db.clients.filter(c => c.id !== HOST_CLIENT_ID); }
+function finPartyName(inv) { return inv.kind === "sales" ? clientName(inv.clientId) : (inv.vendor || "-"); }
+function finParseAmount(raw, allowZero) {
+  const s = String(raw ?? "").trim();
+  if (s === "") return null;
+  const n = Number(s);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0 || (n === 0 && !allowZero)) return null;
+  return n;
+}
+function finSave() { saveDB(db); render(); }
+function finDownloadCSV(filename, rows) {
+  const csv = "﻿" + rows.map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+  link.download = `${filename}_${todayISO()}.csv`;
+  link.click();
+}
+function finStatusBadge(label) {
+  const cls = /^已/.test(label) ? "bg-emerald-100 text-emerald-700" : /^部分/.test(label) ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700";
+  return `<span class="px-2 py-0.5 rounded-full text-xs ${cls}">${label}</span>`;
+}
+function finBindFilter(id, obj, key, afterChange) {
+  const el = document.getElementById(id);
+  if (el) el.onchange = () => { obj[key] = el.value; if (afterChange) afterChange(); render(); };
+}
+function finAccountName(id) { return db.finance.accounts.find(a => a.id === id)?.name || "（已刪除帳戶）"; }
+function finEntryAllocated(e) { return (e.allocations || []).reduce((s, a) => s + a.amount, 0); }
+function finNextSeq() { return db.finance.ledger.reduce((m, e) => Math.max(m, e.seq || 0), 0) + 1; }
+function finIsTransfer(e) { return e.category === FIN_TRANSFER_CATEGORY || !!e.transferGroup; }
+
+// ---------- 發票核對（已收／已付）計算 ----------
+// 已核對金額 = 所有流水帳分配到這張發票的金額加總。銷項顯示「已收」，進項顯示「已付」。
+function finStateLabel(kind, state) {
+  const m = kind === "sales" ? { open: "未收", partial: "部分收款", settled: "已收" } : { open: "未付", partial: "部分付款", settled: "已付" };
+  return m[state];
+}
+function finSettlement() {
+  const paid = {};
+  db.finance.ledger.forEach(e => (e.allocations || []).forEach(a => { paid[a.invoiceId] = (paid[a.invoiceId] || 0) + a.amount; }));
+  const out = {};
+  db.finance.invoices.forEach(inv => {
+    const p = paid[inv.id] || 0;
+    const outstanding = Math.max(0, inv.total - p);
+    const state = outstanding <= 0 ? "settled" : p > 0 ? "partial" : "open";
+    out[inv.id] = { paid: p, total: inv.total, outstanding, state, status: finStateLabel(inv.kind, state) };
+  });
+  return out;
+}
+
+// ---------- 應收帳款計算 ----------
+// 銷項發票未收 = 發票總額 − 已核對的流水；客戶入帳（流水帳有 clientId 的收入）還沒分配到發票的部分 = 待核對入帳。
+function finComputeAR() {
+  const invoiceInfo = finSettlement();
+  const clients = {};
+  const ensure = cid => clients[cid] || (clients[cid] = { clientId: cid, invoices: [], receipts: [], invoiced: 0, received: 0, matched: 0, outstanding: 0, unmatched: 0, oldestUnpaidDate: "" });
+  db.finance.invoices.filter(i => i.kind === "sales" && i.clientId).forEach(i => ensure(i.clientId).invoices.push(i));
+  db.finance.ledger.filter(e => e.type === "income" && e.clientId).forEach(e => ensure(e.clientId).receipts.push(e));
+  Object.values(clients).forEach(c => {
+    c.invoices.sort((a, b) => (a.date + a.number).localeCompare(b.date + b.number));
+    c.invoices.forEach(inv => {
+      const info = invoiceInfo[inv.id];
+      c.invoiced += inv.total;
+      c.matched += info.paid;
+      c.outstanding += info.outstanding;
+      if (info.outstanding > 0 && !c.oldestUnpaidDate) c.oldestUnpaidDate = inv.date;
+    });
+    c.receipts.forEach(e => {
+      c.received += e.amount;
+      c.unmatched += Math.max(0, e.amount - finEntryAllocated(e));
+    });
+  });
+  return { clients, invoiceInfo };
+}
+
+// ---------- 側邊導覽 ----------
+function renderFinanceNav() {
+  if (!canUseFinance()) return "";
+  if (view.page.startsWith("fin-")) financeMenuOpen = true;
+  const current = FIN_PARENT[view.page] || view.page;
+  return `
+  <div>
+    <button id="finance-toggle-btn" class="w-full text-left px-3 py-2 rounded hover:bg-slate-700 flex items-center justify-between">
+      <span>💰 財務會計</span><span class="text-xs">${financeMenuOpen ? "▾" : "▸"}</span>
+    </button>
+    ${financeMenuOpen ? FIN_PAGES.map(p => `
+      <button data-nav="${p.page}" class="nav-btn w-full text-left pl-8 pr-3 py-2 rounded hover:bg-slate-700 ${current === p.page ? "bg-slate-700" : ""}">${p.icon} ${p.label}</button>`).join("") : ""}
+  </div>`;
+}
+function bindFinanceNav() {
+  document.getElementById("finance-toggle-btn")?.addEventListener("click", () => {
+    financeMenuOpen = !financeMenuOpen;
+    render();
+  });
+}
+
+function financeTitle() {
+  if (!canUseFinance()) return "財務會計";   // 沒權限時標題也不可洩漏貸款、客戶名稱
+  switch (view.page) {
+    case "fin-invoices": return "發票登錄";
+    case "fin-ledger": return "流水帳（多帳戶收支）";
+    case "fin-entry-edit": return "編輯流水帳";
+    case "fin-reconcile": return "核對流水帳";
+    case "fin-import": return "匯入銀行對帳單";
+    case "fin-accounts": return "銀行帳戶";
+    case "fin-loans": return "貸款管理";
+    case "fin-loan-detail": return `${db.finance.loans.find(l => l.id === view.finLoanId)?.name || "貸款"}－扣款核對`;
+    case "fin-ar": return "客戶應收帳款與請款";
+    case "fin-ar-detail": return `${clientName(view.finClientId)}－應收帳款`;
+    case "fin-reports": return "財務報表";
+    default: return "財務會計";
+  }
+}
+
+function renderFinancePage() {
+  if (!canUseFinance()) return `<div class="bg-white rounded-xl shadow-sm p-6 text-sm text-slate-500">財務會計僅限震浤管理員使用。</div>`;
+  switch (view.page) {
+    case "fin-invoices": return finRenderInvoices();
+    case "fin-ledger": return finRenderLedger();
+    case "fin-entry-edit": return finRenderEntryEdit();
+    case "fin-reconcile": return finRenderReconcile();
+    case "fin-import": return finRenderImport();
+    case "fin-accounts": return finRenderAccounts();
+    case "fin-loans": return finRenderLoans();
+    case "fin-loan-detail": return finRenderLoanDetail();
+    case "fin-ar": return finRenderAR();
+    case "fin-ar-detail": return finRenderARDetail();
+    case "fin-reports": return finRenderReports();
+    default: return "";
+  }
+}
+function bindFinancePage() {
+  if (!canUseFinance()) return;
+  switch (view.page) {
+    case "fin-invoices": return finBindInvoices();
+    case "fin-ledger": return finBindLedger();
+    case "fin-entry-edit": return finBindEntryEdit();
+    case "fin-reconcile": return finBindReconcile();
+    case "fin-import": return finBindImport();
+    case "fin-accounts": return finBindAccounts();
+    case "fin-loans": return finBindLoans();
+    case "fin-loan-detail": return finBindLoanDetail();
+    case "fin-ar": return finBindAR();
+    case "fin-ar-detail": return finBindARDetail();
+    case "fin-reports": return finBindReports();
+  }
+}
+
+// ============================================================
+// 發票登錄
+// ============================================================
+function finFilteredInvoices(st) {
+  const f = finInvFilter;
+  let rows = db.finance.invoices.slice().sort((a, b) => (b.date + b.number).localeCompare(a.date + a.number));
+  if (f.kind) rows = rows.filter(i => i.kind === f.kind);
+  if (f.month) rows = rows.filter(i => finMonthOf(i.date) === f.month);
+  if (f.status) rows = rows.filter(i => st[i.id]?.state === f.status);
+  const q = f.q.trim().toLowerCase();
+  if (q) rows = rows.filter(i => `${i.number} ${finPartyName(i)} ${i.note || ""}`.toLowerCase().includes(q));
+  return rows;
+}
+
+function finRenderInvoices() {
+  const st = finSettlement();
+  const d = finInvDraft;
+  const clients = finClients();
+  const f = finInvFilter;
+  const rows = finFilteredInvoices(st);
+  const sum = kind => rows.filter(i => i.kind === kind).reduce((s, i) => ({ n: s.n + 1, amount: s.amount + i.amount, tax: s.tax + i.tax, total: s.total + i.total, open: s.open + st[i.id].outstanding }), { n: 0, amount: 0, tax: 0, total: 0, open: 0 });
+  const sales = sum("sales"), purchase = sum("purchase");
+  const vendors = [...new Set(db.finance.invoices.filter(i => i.kind === "purchase" && i.vendor).map(i => i.vendor))];
+
+  return `
+  <div class="bg-white rounded-xl shadow-sm p-6 mb-6">
+    <p class="font-semibold text-sm text-slate-700 mb-3">登錄發票</p>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+      <div>
+        <label class="text-xs text-slate-500">類型</label>
+        <select id="inv-kind" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
+          <option value="sales" ${d.kind === "sales" ? "selected" : ""}>銷項（開給客戶）</option>
+          <option value="purchase" ${d.kind === "purchase" ? "selected" : ""}>進項（廠商開給我們）</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">發票日期</label>
+        <input id="inv-date" type="date" value="${d.date || todayISO()}" class="w-full border rounded-lg px-3 py-2 text-sm mt-1"/>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">發票號碼</label>
+        <input id="inv-number" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="例：AB-12345678"/>
+      </div>
+      <div id="inv-client-wrap" class="${d.kind === "sales" ? "" : "hidden"}">
+        <label class="text-xs text-slate-500">客戶</label>
+        <select id="inv-client" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
+          ${clients.length ? clients.map(c => `<option value="${finEsc(c.id)}" ${c.id === d.clientId ? "selected" : ""}>${finEsc(c.name)}</option>`).join("") : `<option value="">尚無客戶</option>`}
+        </select>
+      </div>
+      <div id="inv-vendor-wrap" class="${d.kind === "purchase" ? "" : "hidden"}">
+        <label class="text-xs text-slate-500">廠商</label>
+        <input id="inv-vendor" list="inv-vendor-list" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="廠商名稱"/>
+        <datalist id="inv-vendor-list">${vendors.map(v => `<option value="${finEsc(v)}"></option>`).join("")}</datalist>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+      <div>
+        <label class="text-xs text-slate-500">未稅金額</label>
+        <input id="inv-amount" type="number" min="0" step="1" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="整數元"/>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">稅別</label>
+        <select id="inv-taxtype" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
+          <option value="taxable" ${d.taxType === "taxable" ? "selected" : ""}>應稅 5%</option>
+          <option value="zero" ${d.taxType === "zero" ? "selected" : ""}>零稅率／免稅 0%</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">稅額（可手動修正）</label>
+        <input id="inv-tax" type="number" min="0" step="1" value="0" class="w-full border rounded-lg px-3 py-2 text-sm mt-1"/>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">含稅總額</label>
+        <p class="mt-1 px-3 py-2 text-sm font-semibold text-slate-800">NT$ <span id="inv-total">0</span></p>
+      </div>
+    </div>
+    <div class="mb-3">
+      <label class="text-xs text-slate-500">備註（選填）</label>
+      <input id="inv-note" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="選填"/>
+    </div>
+    <button id="inv-add-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">登錄發票</button>
+    <p id="inv-msg" class="text-xs hidden mt-2"></p>
+  </div>
+
+  <div class="bg-white rounded-xl shadow-sm p-4 mb-3">
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3 items-end">
+      <div>
+        <label class="text-xs text-slate-500">類型</label>
+        <select id="inv-f-kind" class="w-full border rounded-lg px-3 py-1.5 text-sm mt-1">
+          <option value="">全部</option>
+          <option value="sales" ${f.kind === "sales" ? "selected" : ""}>銷項</option>
+          <option value="purchase" ${f.kind === "purchase" ? "selected" : ""}>進項</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">核對狀態（收款／付款）</label>
+        <select id="inv-f-status" class="w-full border rounded-lg px-3 py-1.5 text-sm mt-1">
+          <option value="">全部</option>
+          <option value="open" ${f.status === "open" ? "selected" : ""}>未結清（未收／未付）</option>
+          <option value="partial" ${f.status === "partial" ? "selected" : ""}>部分收付</option>
+          <option value="settled" ${f.status === "settled" ? "selected" : ""}>已結清（已收／已付）</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">月份</label>
+        <input id="inv-f-month" type="month" value="${f.month}" class="w-full border rounded-lg px-3 py-1.5 text-sm mt-1"/>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">搜尋（號碼／對象／備註）</label>
+        <input id="inv-f-q" value="${finEsc(f.q)}" class="w-full border rounded-lg px-3 py-1.5 text-sm mt-1" placeholder="輸入後按 Enter"/>
+      </div>
+      <div class="flex gap-2">
+        <button id="inv-f-clear" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">清除</button>
+        <button id="inv-export-btn" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">📊 匯出 CSV</button>
+      </div>
+    </div>
+    <p class="text-xs text-slate-500 mt-3">
+      共 ${rows.length} 張　｜　銷項 ${sales.n} 張：未稅 ${finMoney(sales.amount)}／稅額 ${finMoney(sales.tax)}／含稅 ${finMoney(sales.total)}／<span class="${sales.open > 0 ? "text-rose-600" : ""}">未收 ${finMoney(sales.open)}</span>
+      　｜　進項 ${purchase.n} 張：未稅 ${finMoney(purchase.amount)}／稅額 ${finMoney(purchase.tax)}／含稅 ${finMoney(purchase.total)}／<span class="${purchase.open > 0 ? "text-amber-600" : ""}">未付 ${finMoney(purchase.open)}</span>
+    </p>
+  </div>
+
+  <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-left">
+        <tr><th class="px-4 py-2">日期</th><th class="px-4 py-2">類型</th><th class="px-4 py-2">發票號碼</th><th class="px-4 py-2">客戶／廠商</th><th class="px-4 py-2 text-right">未稅</th><th class="px-4 py-2 text-right">稅額</th><th class="px-4 py-2 text-right">含稅總額</th><th class="px-4 py-2 text-right">已核對</th><th class="px-4 py-2">狀態</th><th class="px-4 py-2">備註</th><th class="px-4 py-2"></th></tr>
+      </thead>
+      <tbody>
+        ${rows.map(i => `
+          <tr class="border-t hover:bg-slate-50">
+            <td class="px-4 py-2 text-xs text-slate-500">${finEsc(i.date)}</td>
+            <td class="px-4 py-2">${i.kind === "sales" ? "銷項" : "進項"}</td>
+            <td class="px-4 py-2 font-mono text-xs">${finEsc(i.number)}</td>
+            <td class="px-4 py-2">${finEsc(finPartyName(i))}</td>
+            <td class="px-4 py-2 text-right">${finMoney(i.amount)}</td>
+            <td class="px-4 py-2 text-right">${finMoney(i.tax)}</td>
+            <td class="px-4 py-2 text-right font-semibold">${finMoney(i.total)}</td>
+            <td class="px-4 py-2 text-right">${finMoney(st[i.id].paid)}</td>
+            <td class="px-4 py-2">${finStatusBadge(st[i.id].status)}</td>
+            <td class="px-4 py-2 text-slate-500">${finEsc(i.note) || "-"}</td>
+            <td class="px-4 py-2 text-right"><button data-id="${finEsc(i.id)}" class="inv-del-btn text-rose-500 hover:underline text-xs">刪除</button></td>
+          </tr>`).join("") || `<tr><td colspan="11" class="px-4 py-8 text-center text-slate-400">尚無發票</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function finBindInvoices() {
+  const $ = id => document.getElementById(id);
+  const kindEl = $("inv-kind"), amountEl = $("inv-amount"), taxTypeEl = $("inv-taxtype"), taxEl = $("inv-tax"), totalEl = $("inv-total");
+  let taxTouched = false;
+
+  const recalc = () => {
+    const amt = Number(amountEl.value) || 0;
+    if (!taxTouched) taxEl.value = taxTypeEl.value === "taxable" ? Math.round(amt * FIN_TAX_RATE) : 0;
+    totalEl.textContent = finMoney(amt + (Number(taxEl.value) || 0));
+  };
+  amountEl.oninput = recalc;
+  taxTypeEl.onchange = () => { finInvDraft.taxType = taxTypeEl.value; taxTouched = false; recalc(); };
+  taxEl.oninput = () => { taxTouched = true; recalc(); };
+  kindEl.onchange = () => {
+    finInvDraft.kind = kindEl.value;
+    $("inv-client-wrap").classList.toggle("hidden", kindEl.value !== "sales");
+    $("inv-vendor-wrap").classList.toggle("hidden", kindEl.value !== "purchase");
+  };
+  $("inv-client").onchange = () => { finInvDraft.clientId = $("inv-client").value; };
+  $("inv-date").onchange = () => { finInvDraft.date = $("inv-date").value; };
+
+  $("inv-add-btn").onclick = () => {
+    const kind = kindEl.value;
+    const date = $("inv-date").value;
+    const number = $("inv-number").value.trim();
+    const amount = finParseAmount(amountEl.value, false);
+    const tax = finParseAmount(taxEl.value, true);
+    const note = $("inv-note").value.trim();
+    const fail = msg => showMsg("inv-msg", msg, true);
+    if (!date) return fail("請選擇發票日期");
+    if (!number) return fail("請輸入發票號碼");
+    let clientId = "", vendor = "";
+    if (kind === "sales") {
+      clientId = $("inv-client").value;
+      if (!clientId) return fail("請選擇客戶（尚無客戶請先到「總覽」建立）");
+    } else {
+      vendor = $("inv-vendor").value.trim();
+      if (!vendor) return fail("請輸入廠商名稱");
+    }
+    if (amount === null) return fail("未稅金額請輸入大於 0 的整數");
+    if (tax === null) return fail("稅額請輸入 0 或正整數");
+    const dup = db.finance.invoices.some(i => i.kind === kind && i.number.toLowerCase() === number.toLowerCase() && (kind === "sales" || i.vendor === vendor));
+    if (dup) return fail("這個發票號碼已經登錄過了");
+    db.finance.invoices.push({ id: finId("inv"), kind, date, number, clientId, vendor, taxType: taxTypeEl.value, amount, tax, total: amount + tax, note });
+    finInvDraft.date = date;
+    finSave();
+  };
+
+  finBindFilter("inv-f-kind", finInvFilter, "kind");
+  finBindFilter("inv-f-status", finInvFilter, "status");
+  finBindFilter("inv-f-month", finInvFilter, "month");
+  finBindFilter("inv-f-q", finInvFilter, "q");
+  $("inv-f-clear").onclick = () => { finInvFilter = { kind: "", status: "", month: "", q: "" }; render(); };
+  $("inv-export-btn").onclick = () => {
+    const st = finSettlement();
+    const rows = [["日期", "類型", "發票號碼", "客戶／廠商", "未稅金額", "稅額", "含稅總額", "已核對金額", "狀態", "備註"]];
+    finFilteredInvoices(st).forEach(i => rows.push([i.date, i.kind === "sales" ? "銷項" : "進項", i.number, finPartyName(i), i.amount, i.tax, i.total, st[i.id].paid, st[i.id].status, i.note || ""]));
+    finDownloadCSV("發票清單", rows);
+  };
+  document.querySelectorAll(".inv-del-btn").forEach(btn => {
+    btn.onclick = () => {
+      const inv = db.finance.invoices.find(i => i.id === btn.dataset.id);
+      if (!inv) return;
+      if (db.finance.ledger.some(e => (e.allocations || []).some(a => a.invoiceId === inv.id))) {
+        alert("這張發票已有核對的流水帳，請先到「流水帳」取消那些流水的核對後再刪除發票。");
+        return;
+      }
+      if (!confirm(`確定要刪除發票「${inv.number}」嗎？`)) return;
+      db.finance.invoices = db.finance.invoices.filter(i => i.id !== inv.id);
+      finSave();
+    };
+  });
+  recalc();
+}
+
+// ============================================================
+// 客戶應收帳款與請款
+// ============================================================
+function finRenderAR() {
+  const ar = finComputeAR();
+  const clients = finClients();
+  const known = new Set(clients.map(c => c.id));
+  // 客戶已被刪除但仍有帳款紀錄時，也要列出來，避免帳對不起來
+  const ids = [...clients.map(c => c.id), ...Object.keys(ar.clients).filter(id => !known.has(id))];
+  const blank = { invoiced: 0, received: 0, matched: 0, outstanding: 0, unmatched: 0, oldestUnpaidDate: "", invoices: [] };
+  const rows = ids.map(id => ({ id, name: clientName(id), c: ar.clients[id] || blank }));
+  rows.sort((a, b) => b.c.outstanding - a.c.outstanding);
+  const total = rows.reduce((s, r) => ({ invoiced: s.invoiced + r.c.invoiced, matched: s.matched + r.c.matched, outstanding: s.outstanding + r.c.outstanding, unmatched: s.unmatched + r.c.unmatched }), { invoiced: 0, matched: 0, outstanding: 0, unmatched: 0 });
+
+  return `
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="bg-white rounded-xl shadow-sm p-5"><p class="text-xs text-slate-500">已開銷項發票（含稅）</p><p class="text-2xl font-bold text-slate-800 mt-1">NT$ ${finMoney(total.invoiced)}</p></div>
+    <div class="bg-white rounded-xl shadow-sm p-5"><p class="text-xs text-slate-500">已核對收款</p><p class="text-2xl font-bold text-emerald-600 mt-1">NT$ ${finMoney(total.matched)}</p></div>
+    <div class="bg-white rounded-xl shadow-sm p-5"><p class="text-xs text-slate-500">未收餘額</p><p class="text-2xl font-bold ${total.outstanding > 0 ? "text-rose-600" : "text-slate-800"} mt-1">NT$ ${finMoney(total.outstanding)}</p>${total.unmatched > 0 ? `<p class="text-xs text-amber-600 mt-1">另有 ${finMoney(total.unmatched)} 的客戶入帳還沒核對到發票</p>` : ""}</div>
+  </div>
+
+  <div class="flex items-center justify-between mb-2">
+    <p class="text-sm text-slate-500">未收餘額只計算「已在流水帳核對到發票」的收款；點客戶可查看明細、登錄收款與列印請款單</p>
+    <button id="ar-export-btn" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">📊 匯出 CSV</button>
+  </div>
+  <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-left">
+        <tr><th class="px-4 py-2">客戶</th><th class="px-4 py-2 text-right">已開發票（含稅）</th><th class="px-4 py-2 text-right">客戶入帳合計</th><th class="px-4 py-2 text-right">未收餘額</th><th class="px-4 py-2 text-right">待核對入帳</th><th class="px-4 py-2 text-right">最久未收（天）</th><th class="px-4 py-2"></th></tr>
+      </thead>
+      <tbody>
+        ${rows.map(r => `
+          <tr class="border-t hover:bg-slate-50">
+            <td class="px-4 py-2 font-medium">${finEsc(r.name)}</td>
+            <td class="px-4 py-2 text-right">${finMoney(r.c.invoiced)}</td>
+            <td class="px-4 py-2 text-right text-emerald-600">${finMoney(r.c.received)}</td>
+            <td class="px-4 py-2 text-right font-semibold ${r.c.outstanding > 0 ? "text-rose-600" : ""}">${finMoney(r.c.outstanding)}</td>
+            <td class="px-4 py-2 text-right ${r.c.unmatched > 0 ? "text-amber-600 font-semibold" : "text-slate-400"}">${r.c.unmatched > 0 ? finMoney(r.c.unmatched) : "-"}</td>
+            <td class="px-4 py-2 text-right">${r.c.oldestUnpaidDate ? finDaysSince(r.c.oldestUnpaidDate) : "-"}</td>
+            <td class="px-4 py-2 text-right"><button data-client="${finEsc(r.id)}" class="ar-open-btn text-blue-600 hover:underline text-xs">明細／收款</button></td>
+          </tr>`).join("") || `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">尚無客戶</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function finBindAR() {
+  document.querySelectorAll(".ar-open-btn").forEach(btn => {
+    btn.onclick = () => navigateTo({ page: "fin-ar-detail", finClientId: btn.dataset.client });
+  });
+  document.getElementById("ar-export-btn").onclick = () => {
+    const ar = finComputeAR();
+    const rows = [["客戶", "已開發票（含稅）", "客戶入帳合計", "已核對收款", "未收餘額", "待核對入帳", "最久未收（天）"]];
+    Object.values(ar.clients).forEach(c => rows.push([clientName(c.clientId), c.invoiced, c.received, c.matched, c.outstanding, c.unmatched, c.oldestUnpaidDate ? finDaysSince(c.oldestUnpaidDate) : ""]));
+    finDownloadCSV("應收帳款彙總", rows);
+  };
+}
+
+function finRenderARDetail() {
+  const clientId = view.finClientId;
+  const client = db.clients.find(c => c.id === clientId);
+  const ar = finComputeAR();
+  const c = ar.clients[clientId] || { invoices: [], receipts: [], invoiced: 0, received: 0, matched: 0, outstanding: 0, unmatched: 0 };
+  const unpaid = c.invoices.filter(i => ar.invoiceInfo[i.id].outstanding > 0);
+  const receipts = c.receipts.slice().sort((a, b) => (b.date + (b.seq || 0)).localeCompare(a.date + (a.seq || 0)));
+  const accounts = db.finance.accounts;
+  const invById = Object.fromEntries(db.finance.invoices.map(i => [i.id, i]));
+  const lastAccount = finLedgerDraft?.accountId && accounts.some(a => a.id === finLedgerDraft.accountId) ? finLedgerDraft.accountId : (accounts.find(a => a.type === "bank") || accounts[0])?.id;
+
+  return `
+  <div class="flex items-center gap-3 mb-4">
+    ${client?.logoUrl ? `<img src="${finEsc(client.logoUrl)}" class="w-24 h-14 object-contain rounded" alt=""/>` : `<span class="text-3xl">🏢</span>`}
+    <div>
+      <p class="font-semibold text-slate-800">${finEsc(clientName(clientId))}</p>
+      <p class="text-xs text-slate-500">${[client?.contact, client?.phone, client?.address].filter(Boolean).map(finEsc).join("　") || "尚未填寫聯絡資料"}</p>
+    </div>
+    <button id="ard-print-btn" class="ml-auto border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100 ${unpaid.length ? "" : "opacity-50"}">🖨 列印請款單</button>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="bg-white rounded-xl shadow-sm p-5"><p class="text-xs text-slate-500">已開發票（含稅）</p><p class="text-xl font-bold text-slate-800 mt-1">NT$ ${finMoney(c.invoiced)}</p></div>
+    <div class="bg-white rounded-xl shadow-sm p-5"><p class="text-xs text-slate-500">已核對收款</p><p class="text-xl font-bold text-emerald-600 mt-1">NT$ ${finMoney(c.matched)}</p></div>
+    <div class="bg-white rounded-xl shadow-sm p-5"><p class="text-xs text-slate-500">未收餘額</p><p class="text-xl font-bold ${c.outstanding > 0 ? "text-rose-600" : "text-slate-800"} mt-1">NT$ ${finMoney(c.outstanding)}</p>${c.unmatched > 0 ? `<p class="text-xs text-amber-600 mt-1">另有 ${finMoney(c.unmatched)} 入帳待核對到發票</p>` : ""}</div>
+  </div>
+
+  <div class="bg-white rounded-xl shadow-sm p-6 mb-6">
+    <p class="font-semibold text-sm text-slate-700 mb-3">登錄收款</p>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+      <div>
+        <label class="text-xs text-slate-500">收款日期</label>
+        <input id="pay-date" type="date" value="${todayISO()}" class="w-full border rounded-lg px-3 py-2 text-sm mt-1"/>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">入帳帳戶</label>
+        <select id="pay-account" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">${accounts.map(a => `<option value="${finEsc(a.id)}" ${a.id === lastAccount ? "selected" : ""}>${finEsc(a.name)}</option>`).join("")}</select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">金額</label>
+        <input id="pay-amount" type="number" min="0" step="1" value="${c.outstanding > 0 ? c.outstanding : ""}" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="整數元"/>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">對應發票</label>
+        <select id="pay-invoice" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
+          <option value="">先不指定（登錄後再到核對頁分配）</option>
+          ${unpaid.map(i => `<option value="${finEsc(i.id)}">${finEsc(i.date)} ${finEsc(i.number)}（未收 ${finMoney(ar.invoiceInfo[i.id].outstanding)}）</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <div class="mb-3">
+      <label class="text-xs text-slate-500">備註（選填）</label>
+      <input id="pay-note" class="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="選填，例：匯款後五碼"/>
+    </div>
+    <button id="pay-add-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">登錄收款</button>
+    <span class="text-xs text-slate-400 ml-2">登錄後會成為該帳戶流水帳的一筆入帳（${FIN_RECEIPT_CATEGORY}）；沒指定發票會直接帶你去核對</span>
+    <p id="pay-msg" class="text-xs hidden mt-2"></p>
+  </div>
+
+  <p class="font-semibold text-sm text-slate-700 mb-2">銷項發票</p>
+  <div class="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-left">
+        <tr><th class="px-4 py-2">日期</th><th class="px-4 py-2">發票號碼</th><th class="px-4 py-2 text-right">含稅總額</th><th class="px-4 py-2 text-right">已核對</th><th class="px-4 py-2 text-right">未收</th><th class="px-4 py-2">狀態</th></tr>
+      </thead>
+      <tbody>
+        ${c.invoices.slice().reverse().map(i => { const x = ar.invoiceInfo[i.id]; return `
+          <tr class="border-t hover:bg-slate-50">
+            <td class="px-4 py-2 text-xs text-slate-500">${finEsc(i.date)}</td>
+            <td class="px-4 py-2 font-mono text-xs">${finEsc(i.number)}</td>
+            <td class="px-4 py-2 text-right">${finMoney(i.total)}</td>
+            <td class="px-4 py-2 text-right text-emerald-600">${finMoney(x.paid)}</td>
+            <td class="px-4 py-2 text-right font-semibold ${x.outstanding > 0 ? "text-rose-600" : ""}">${finMoney(x.outstanding)}</td>
+            <td class="px-4 py-2">${finStatusBadge(x.status)}</td>
+          </tr>`; }).join("") || `<tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">尚無銷項發票（請先到「發票登錄」登錄）</td></tr>`}
+      </tbody>
+    </table>
+  </div>
+
+  <p class="font-semibold text-sm text-slate-700 mb-2">客戶入帳（來自流水帳）</p>
+  <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-left">
+        <tr><th class="px-4 py-2">日期</th><th class="px-4 py-2">帳戶</th><th class="px-4 py-2 text-right">金額</th><th class="px-4 py-2 text-right">已核對</th><th class="px-4 py-2">對應發票</th><th class="px-4 py-2">備註</th><th class="px-4 py-2"></th></tr>
+      </thead>
+      <tbody>
+        ${receipts.map(e => { const matched = finEntryAllocated(e); return `
+          <tr class="border-t hover:bg-slate-50">
+            <td class="px-4 py-2 text-xs text-slate-500">${finEsc(e.date)}</td>
+            <td class="px-4 py-2">${finEsc(finAccountName(e.accountId))}</td>
+            <td class="px-4 py-2 text-right font-semibold text-emerald-600">${finMoney(e.amount)}</td>
+            <td class="px-4 py-2 text-right ${matched < e.amount ? "text-amber-600 font-semibold" : ""}">${finMoney(matched)}</td>
+            <td class="px-4 py-2 font-mono text-xs">${(e.allocations || []).map(a => finEsc(invById[a.invoiceId]?.number || "?")).join("、") || "-"}</td>
+            <td class="px-4 py-2 text-slate-500">${finEsc(e.note || e.ref) || "-"}</td>
+            <td class="px-4 py-2 text-right whitespace-nowrap"><button data-id="${finEsc(e.id)}" class="pay-recon-btn text-blue-600 hover:underline text-xs mr-2">核對</button><button data-id="${finEsc(e.id)}" class="pay-del-btn text-rose-500 hover:underline text-xs">刪除</button></td>
+          </tr>`; }).join("") || `<tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">尚無客戶入帳</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function finBindARDetail() {
+  const clientId = view.finClientId;
+  const $ = id => document.getElementById(id);
+  $("pay-add-btn").onclick = () => {
+    const date = $("pay-date").value;
+    const accountId = $("pay-account").value;
+    const amount = finParseAmount($("pay-amount").value, false);
+    const invoiceId = $("pay-invoice").value;
+    const fail = msg => showMsg("pay-msg", msg, true);
+    if (!date) return fail("請選擇收款日期");
+    if (!accountId) return fail("請選擇入帳帳戶（請先到「銀行帳戶」建立）");
+    if (amount === null) return fail("金額請輸入大於 0 的整數");
+    const entry = { id: finId("led"), seq: finNextSeq(), accountId, date, type: "income", category: FIN_RECEIPT_CATEGORY, amount, counterparty: clientName(clientId), note: $("pay-note").value.trim(), clientId, allocations: [], source: "manual" };
+    if (invoiceId) {
+      const outstanding = finSettlement()[invoiceId]?.outstanding || 0;
+      const a = Math.min(amount, outstanding);
+      if (a > 0) entry.allocations = [{ invoiceId, amount: a }];
+    }
+    db.finance.ledger.push(entry);
+    finLedgerDraft = { ...finLedgerDraft, accountId };
+    saveDB(db);
+    if (invoiceId) render(); else finOpenReconcile(entry.id);
+  };
+  document.querySelectorAll(".pay-recon-btn").forEach(btn => { btn.onclick = () => finOpenReconcile(btn.dataset.id); });
+  document.querySelectorAll(".pay-del-btn").forEach(btn => {
+    btn.onclick = () => {
+      const e = db.finance.ledger.find(x => x.id === btn.dataset.id);
+      if (!e || !confirm(`確定要刪除這筆 ${finMoney(e.amount)} 元的入帳嗎？它在流水帳裡的紀錄也會一併刪除。`)) return;
+      db.finance.ledger = db.finance.ledger.filter(x => x.id !== e.id);
+      finSave();
+    };
+  });
+  $("ard-print-btn").onclick = () => finPrintStatement(clientId);
+}
+
+// 請款單：另開視窗產生可列印的對帳／請款明細
+function finPrintStatement(clientId) {
+  const ar = finComputeAR();
+  const c = ar.clients[clientId];
+  const unpaid = c ? c.invoices.filter(i => ar.invoiceInfo[i.id].outstanding > 0) : [];
+  if (!unpaid.length) { alert("這個客戶目前沒有未收款的發票，不需要請款單。"); return; }
+  const client = db.clients.find(x => x.id === clientId);
+  const host = db.clients.find(x => x.id === HOST_CLIENT_ID);
+  const due = unpaid.reduce((s, i) => s + ar.invoiceInfo[i.id].outstanding, 0);
+  const logo = host?.logoUrl && host.logoUrl.startsWith("data:image/") ? `<img src="${finEsc(host.logoUrl)}" style="height:48px;max-width:160px;object-fit:contain"/>` : "";
+  const html = `<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8"><title>請款單－${finEsc(clientName(clientId))}</title>
+<style>
+  body{font-family:-apple-system,"Microsoft JhengHei",sans-serif;color:#1e293b;margin:32px;font-size:14px}
+  h1{font-size:22px;margin:0}
+  .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}
+  .meta{margin-bottom:16px;line-height:1.8}
+  table{width:100%;border-collapse:collapse;margin-top:8px}
+  th,td{border:1px solid #cbd5e1;padding:8px 10px;text-align:left}
+  th{background:#f1f5f9}
+  .r{text-align:right}
+  .total{margin-top:16px;text-align:right;font-size:18px;font-weight:bold}
+  .note{margin-top:32px;font-size:12px;color:#64748b}
+  @media print{body{margin:16px}}
+</style></head><body>
+  <div class="head"><div>${logo}<div style="font-weight:bold;margin-top:4px">${finEsc(host?.name || "")}</div></div><h1>請款單</h1></div>
+  <div class="meta">
+    <div><b>客戶：</b>${finEsc(clientName(clientId))}</div>
+    ${client?.contact ? `<div><b>聯絡人：</b>${finEsc(client.contact)}${client.phone ? "　" + finEsc(client.phone) : ""}</div>` : ""}
+    ${client?.address ? `<div><b>地址：</b>${finEsc(client.address)}</div>` : ""}
+    <div><b>製單日期：</b>${finEsc(todayISO())}</div>
+  </div>
+  <table>
+    <thead><tr><th>發票日期</th><th>發票號碼</th><th class="r">含稅金額</th><th class="r">已收</th><th class="r">應收餘額</th></tr></thead>
+    <tbody>${unpaid.map(i => { const x = ar.invoiceInfo[i.id]; return `<tr><td>${finEsc(i.date)}</td><td>${finEsc(i.number)}</td><td class="r">${finMoney(i.total)}</td><td class="r">${finMoney(x.paid)}</td><td class="r">${finMoney(x.outstanding)}</td></tr>`; }).join("")}</tbody>
+  </table>
+  <div class="total">應收總額：NT$ ${finMoney(due)}</div>
+  <div class="note">如已付款，請忽略此單並來信告知匯款資料，謝謝。</div>
+</body></html>`;
+  const w = window.open("", "_blank");
+  if (!w) { alert("瀏覽器擋住了彈出視窗，請允許此網站的彈出視窗後再試一次。"); return; }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 300);
+}
+
+// ============================================================
+// 財務報表
+// ============================================================
+function finReportData(year, accountId) {
+  const y = String(year);
+  const months = Array.from({ length: 12 }, (_, i) => ({ month: i + 1, income: 0, expense: 0 }));
+  const incomeCat = {}, expenseCat = {};
+  db.finance.ledger.filter(e => (e.date || "").startsWith(y) && !finIsTransfer(e) && (!accountId || e.accountId === accountId)).forEach(e => {
+    const m = months[Number(e.date.slice(5, 7)) - 1];
+    if (!m) return;
+    const cat = e.category || "未分類";
+    if (e.type === "income") { m.income += e.amount; incomeCat[cat] = (incomeCat[cat] || 0) + e.amount; }
+    else { m.expense += e.amount; expenseCat[cat] = (expenseCat[cat] || 0) + e.amount; }
+  });
+  // 營業稅：每兩個月為一期（1-2月、3-4月…）
+  const periods = Array.from({ length: 6 }, (_, i) => ({ label: `${i * 2 + 1}-${i * 2 + 2} 月`, salesAmount: 0, salesTax: 0, purchaseAmount: 0, purchaseTax: 0 }));
+  db.finance.invoices.filter(i => (i.date || "").startsWith(y)).forEach(i => {
+    const p = periods[Math.floor((Number(i.date.slice(5, 7)) - 1) / 2)];
+    if (!p) return;
+    if (i.kind === "sales") { p.salesAmount += i.amount; p.salesTax += i.tax; } else { p.purchaseAmount += i.amount; p.purchaseTax += i.tax; }
+  });
+  return { months, incomeCat, expenseCat, periods };
+}
+
+function finAgingData() {
+  const ar = finComputeAR();
+  const rows = [];
+  Object.values(ar.clients).forEach(c => {
+    const b = { clientId: c.clientId, d0: 0, d30: 0, d60: 0, d90: 0, total: 0 };
+    c.invoices.forEach(i => {
+      const out = ar.invoiceInfo[i.id].outstanding;
+      if (out <= 0) return;
+      const age = finDaysSince(i.date);
+      if (age <= 30) b.d0 += out; else if (age <= 60) b.d30 += out; else if (age <= 90) b.d60 += out; else b.d90 += out;
+      b.total += out;
+    });
+    if (b.total > 0) rows.push(b);
+  });
+  return rows.sort((a, b) => b.total - a.total);
+}
+
+function finRenderReports() {
+  const year = finReportYear;
+  const data = finReportData(year, finReportAccount);
+  const aging = finAgingData();
+  const dataYears = new Set([new Date().getFullYear(), year]);
+  [...db.finance.ledger, ...db.finance.invoices].forEach(r => { const y = Number((r.date || "").slice(0, 4)); if (y) dataYears.add(y); });
+  const years = [...dataYears].sort((a, b) => b - a);
+  const totalIncome = data.months.reduce((s, m) => s + m.income, 0);
+  const totalExpense = data.months.reduce((s, m) => s + m.expense, 0);
+  const maxVal = Math.max(1, ...data.months.map(m => Math.max(m.income, m.expense)));
+  const bar = v => v > 0 ? Math.max(2, Math.round(v / maxVal * 100)) : 0;
+  const sumPeriods = data.periods.reduce((s, p) => ({ salesAmount: s.salesAmount + p.salesAmount, salesTax: s.salesTax + p.salesTax, purchaseAmount: s.purchaseAmount + p.purchaseAmount, purchaseTax: s.purchaseTax + p.purchaseTax }), { salesAmount: 0, salesTax: 0, purchaseAmount: 0, purchaseTax: 0 });
+  const agingTotal = aging.reduce((s, r) => ({ d0: s.d0 + r.d0, d30: s.d30 + r.d30, d60: s.d60 + r.d60, d90: s.d90 + r.d90, total: s.total + r.total }), { d0: 0, d30: 0, d60: 0, d90: 0, total: 0 });
+  const catRows = (obj, cls) => Object.entries(obj).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<tr class="border-t"><td class="px-4 py-2">${finEsc(k)}</td><td class="px-4 py-2 text-right font-semibold ${cls}">${finMoney(v)}</td></tr>`).join("") || `<tr><td colspan="2" class="px-4 py-4 text-center text-slate-400">無資料</td></tr>`;
+
+  return `
+  <div class="flex flex-wrap items-center gap-3 mb-4">
+    <label class="text-sm text-slate-600">年度</label>
+    <select id="rep-year" class="border rounded-lg px-3 py-1.5 text-sm">${years.map(y => `<option value="${y}" ${y === year ? "selected" : ""}>${y}</option>`).join("")}</select>
+    <label class="text-sm text-slate-600 ml-2">帳戶</label>
+    <select id="rep-account" class="border rounded-lg px-3 py-1.5 text-sm">
+      <option value="">全部帳戶</option>
+      ${db.finance.accounts.map(a => `<option value="${finEsc(a.id)}" ${a.id === finReportAccount ? "selected" : ""}>${finEsc(a.name)}</option>`).join("")}
+    </select>
+    <span class="text-xs text-slate-400">收支報表以「流水帳」為準（現金基礎，不含帳戶間轉帳）；營業稅試算以「發票」為準。</span>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="bg-white rounded-xl shadow-sm p-5"><p class="text-xs text-slate-500">${year} 年收入</p><p class="text-2xl font-bold text-emerald-600 mt-1">NT$ ${finMoney(totalIncome)}</p></div>
+    <div class="bg-white rounded-xl shadow-sm p-5"><p class="text-xs text-slate-500">${year} 年支出</p><p class="text-2xl font-bold text-rose-600 mt-1">NT$ ${finMoney(totalExpense)}</p></div>
+    <div class="bg-white rounded-xl shadow-sm p-5"><p class="text-xs text-slate-500">${year} 年淨額</p><p class="text-2xl font-bold ${totalIncome - totalExpense < 0 ? "text-rose-600" : "text-slate-800"} mt-1">NT$ ${finMoney(totalIncome - totalExpense)}</p></div>
+  </div>
+
+  <div class="bg-white rounded-xl shadow-sm p-6 mb-6">
+    <div class="flex items-center justify-between mb-3">
+      <p class="font-semibold text-sm text-slate-700">月度收支（<span class="text-emerald-600">■ 收入</span>　<span class="text-rose-500">■ 支出</span>）</p>
+      <button id="rep-export-monthly" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">📊 匯出 CSV</button>
+    </div>
+    <div class="flex items-end gap-2 h-40 mb-4">
+      ${data.months.map(m => `
+        <div class="flex-1 flex flex-col items-center justify-end h-full" title="${m.month} 月　收入 ${finMoney(m.income)}／支出 ${finMoney(m.expense)}">
+          <div class="flex items-end gap-0.5 h-full w-full justify-center">
+            <div class="w-3 bg-emerald-400 rounded-t" style="height:${bar(m.income)}%"></div>
+            <div class="w-3 bg-rose-400 rounded-t" style="height:${bar(m.expense)}%"></div>
+          </div>
+          <span class="text-[10px] text-slate-400 mt-1">${m.month}月</span>
+        </div>`).join("")}
+    </div>
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-left"><tr><th class="px-4 py-2">月份</th><th class="px-4 py-2 text-right">收入</th><th class="px-4 py-2 text-right">支出</th><th class="px-4 py-2 text-right">淨額</th></tr></thead>
+      <tbody>
+        ${data.months.map(m => `<tr class="border-t"><td class="px-4 py-2">${m.month} 月</td><td class="px-4 py-2 text-right text-emerald-600">${finMoney(m.income)}</td><td class="px-4 py-2 text-right text-rose-600">${finMoney(m.expense)}</td><td class="px-4 py-2 text-right font-semibold ${m.income - m.expense < 0 ? "text-rose-600" : ""}">${finMoney(m.income - m.expense)}</td></tr>`).join("")}
+        <tr class="border-t bg-slate-50 font-semibold"><td class="px-4 py-2">合計</td><td class="px-4 py-2 text-right text-emerald-600">${finMoney(totalIncome)}</td><td class="px-4 py-2 text-right text-rose-600">${finMoney(totalExpense)}</td><td class="px-4 py-2 text-right">${finMoney(totalIncome - totalExpense)}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+    <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+      <p class="font-semibold text-sm text-slate-700 px-4 pt-4 pb-2">收入類別（${year}）</p>
+      <table class="w-full text-sm"><tbody>${catRows(data.incomeCat, "text-emerald-600")}</tbody></table>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+      <p class="font-semibold text-sm text-slate-700 px-4 pt-4 pb-2">支出類別（${year}）</p>
+      <table class="w-full text-sm"><tbody>${catRows(data.expenseCat, "text-rose-600")}</tbody></table>
+    </div>
+  </div>
+
+  <div class="bg-white rounded-xl shadow-sm p-6 mb-6">
+    <div class="flex items-center justify-between mb-3">
+      <p class="font-semibold text-sm text-slate-700">營業稅試算（${year}，每兩個月一期）</p>
+      <button id="rep-export-vat" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">📊 匯出 CSV</button>
+    </div>
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-left"><tr><th class="px-4 py-2">期別</th><th class="px-4 py-2 text-right">銷售額</th><th class="px-4 py-2 text-right">銷項稅額</th><th class="px-4 py-2 text-right">進貨額</th><th class="px-4 py-2 text-right">進項稅額</th><th class="px-4 py-2 text-right">應納（退）稅額</th></tr></thead>
+      <tbody>
+        ${data.periods.map(p => `<tr class="border-t"><td class="px-4 py-2">${p.label}</td><td class="px-4 py-2 text-right">${finMoney(p.salesAmount)}</td><td class="px-4 py-2 text-right">${finMoney(p.salesTax)}</td><td class="px-4 py-2 text-right">${finMoney(p.purchaseAmount)}</td><td class="px-4 py-2 text-right">${finMoney(p.purchaseTax)}</td><td class="px-4 py-2 text-right font-semibold ${p.salesTax - p.purchaseTax < 0 ? "text-emerald-600" : ""}">${finMoney(p.salesTax - p.purchaseTax)}</td></tr>`).join("")}
+        <tr class="border-t bg-slate-50 font-semibold"><td class="px-4 py-2">合計</td><td class="px-4 py-2 text-right">${finMoney(sumPeriods.salesAmount)}</td><td class="px-4 py-2 text-right">${finMoney(sumPeriods.salesTax)}</td><td class="px-4 py-2 text-right">${finMoney(sumPeriods.purchaseAmount)}</td><td class="px-4 py-2 text-right">${finMoney(sumPeriods.purchaseTax)}</td><td class="px-4 py-2 text-right">${finMoney(sumPeriods.salesTax - sumPeriods.purchaseTax)}</td></tr>
+      </tbody>
+    </table>
+    <p class="text-xs text-slate-400 mt-2">試算僅供參考，實際申報請依稅務規定與會計師確認；負數代表留抵稅額。</p>
+  </div>
+
+  <div class="bg-white rounded-xl shadow-sm p-6">
+    <div class="flex items-center justify-between mb-3">
+      <p class="font-semibold text-sm text-slate-700">應收帳款帳齡（截至今天，依發票日期；只計已核對的收款）</p>
+      <button id="rep-export-aging" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">📊 匯出 CSV</button>
+    </div>
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-left"><tr><th class="px-4 py-2">客戶</th><th class="px-4 py-2 text-right">0–30 天</th><th class="px-4 py-2 text-right">31–60 天</th><th class="px-4 py-2 text-right">61–90 天</th><th class="px-4 py-2 text-right">90 天以上</th><th class="px-4 py-2 text-right">未收合計</th></tr></thead>
+      <tbody>
+        ${aging.map(r => `<tr class="border-t"><td class="px-4 py-2">${finEsc(clientName(r.clientId))}</td><td class="px-4 py-2 text-right">${finMoney(r.d0)}</td><td class="px-4 py-2 text-right">${finMoney(r.d30)}</td><td class="px-4 py-2 text-right">${finMoney(r.d60)}</td><td class="px-4 py-2 text-right ${r.d90 > 0 ? "text-rose-600 font-semibold" : ""}">${finMoney(r.d90)}</td><td class="px-4 py-2 text-right font-semibold">${finMoney(r.total)}</td></tr>`).join("") || `<tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">目前沒有未收款</td></tr>`}
+        ${aging.length ? `<tr class="border-t bg-slate-50 font-semibold"><td class="px-4 py-2">合計</td><td class="px-4 py-2 text-right">${finMoney(agingTotal.d0)}</td><td class="px-4 py-2 text-right">${finMoney(agingTotal.d30)}</td><td class="px-4 py-2 text-right">${finMoney(agingTotal.d60)}</td><td class="px-4 py-2 text-right">${finMoney(agingTotal.d90)}</td><td class="px-4 py-2 text-right">${finMoney(agingTotal.total)}</td></tr>` : ""}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function finBindReports() {
+  const $ = id => document.getElementById(id);
+  $("rep-year").onchange = () => { finReportYear = Number($("rep-year").value); render(); };
+  $("rep-account").onchange = () => { finReportAccount = $("rep-account").value; render(); };
+  $("rep-export-monthly").onclick = () => {
+    const d = finReportData(finReportYear, finReportAccount);
+    const rows = [["月份", "收入", "支出", "淨額"]];
+    d.months.forEach(m => rows.push([`${finReportYear}/${m.month}`, m.income, m.expense, m.income - m.expense]));
+    rows.push(["合計", d.months.reduce((s, m) => s + m.income, 0), d.months.reduce((s, m) => s + m.expense, 0), d.months.reduce((s, m) => s + m.income - m.expense, 0)]);
+    finDownloadCSV(`月度收支_${finReportYear}`, rows);
+  };
+  $("rep-export-vat").onclick = () => {
+    const d = finReportData(finReportYear, "");
+    const rows = [["期別", "銷售額", "銷項稅額", "進貨額", "進項稅額", "應納（退）稅額"]];
+    d.periods.forEach(p => rows.push([`${finReportYear} ${p.label}`, p.salesAmount, p.salesTax, p.purchaseAmount, p.purchaseTax, p.salesTax - p.purchaseTax]));
+    finDownloadCSV(`營業稅試算_${finReportYear}`, rows);
+  };
+  $("rep-export-aging").onclick = () => {
+    const rows = [["客戶", "0–30 天", "31–60 天", "61–90 天", "90 天以上", "未收合計"]];
+    finAgingData().forEach(r => rows.push([clientName(r.clientId), r.d0, r.d30, r.d60, r.d90, r.total]));
+    finDownloadCSV("應收帳款帳齡", rows);
+  };
+}
