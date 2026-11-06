@@ -31,8 +31,15 @@ function ensureFinanceData(d) {
     const names = [...new Set(f.invoices.filter(i => i.kind === "purchase" && i.vendor).map(i => i.vendor))];
     f.vendors = names.map(name => ({ name, lastUsed: 0 }));
   }
-  if (!f.accounts.length) f.accounts.push({ id: "acc-cash", name: "現金", type: "cash", openingBalance: 0 });
-  const defaultAccountId = f.accounts[0].id;
+  // 付款編號已併入支出單號
+  f.invoices.forEach(i => {
+    if (i.payNo && !i.expenseNo) i.expenseNo = i.payNo;
+    delete i.payNo;
+  });
+  // 舊資料有沒指定帳戶的流水時，才需要一個帳戶來放
+  const needsAccount = Array.isArray(f.payments) || f.ledger.some(e => !e.accountId);
+  if (!f.accounts.length && needsAccount) f.accounts.push({ id: "acc-bank", name: "銀行帳戶", type: "bank", openingBalance: 0 });
+  const defaultAccountId = f.accounts[0]?.id;
   // 舊版的收款（payments）併入流水帳：一筆收款就是一筆「客戶入帳」
   if (Array.isArray(f.payments)) {
     f.payments.forEach(p => {
@@ -48,7 +55,119 @@ function ensureFinanceData(d) {
     if (!e.accountId) e.accountId = defaultAccountId;
     if (!Array.isArray(e.allocations)) e.allocations = [];
   });
+  // 不再使用現金帳戶：沒有任何紀錄的直接移除；已有流水或貸款的先留著，避免帳目遺失
+  f.accounts = f.accounts.filter(a => a.type !== "cash" || f.ledger.some(e => e.accountId === a.id) || f.loans.some(l => l.accountId === a.id));
+  assignFinanceNumbers(f);
   return d;
+}
+
+// ---- 匯款自動判定 ----
+const FIN_TRANSFER_LABEL = "帳戶間轉帳";
+const FIN_BANK_CODE_GUESS = [[/第一/, "007"], [/富邦/, "012"], [/合作金庫|合庫/, "006"], [/[台臺]中商銀/, "053"], [/中國信託|中信/, "822"], [/國泰/, "013"]];
+
+// 從文字（銀行摘要、收款方）找出對方帳號，判定這筆匯款：
+//   transfer：帳號後五碼是公司其他帳戶 → 內部轉帳；same：同行免手續費；cross：跨行，收該帳戶的跨行手續費；none：判定不出來
+function judgeBankTransfer(text, type, account, accounts) {
+  const m = String(text || "").match(/(?<!\d)\d{10,19}(?!\d)/);
+  if (!m || !account) return { kind: "none", fee: 0 };
+  const digits = m[0];
+  const target = accounts.find(a => a.id !== account.id && a.accountNo && digits.endsWith(a.accountNo));
+  if (target) return { kind: "transfer", fee: 0, target };
+  // 只有 19 碼（3 碼銀行代碼＋16 碼帳號）才看得出銀行；較短的多半是繳費單號（例如健保），不判定
+  if (type !== "expense" || !account.bankCode || digits.length !== 19) return { kind: "none", fee: 0 };
+  if (digits.slice(0, 3) === account.bankCode) return { kind: "same", fee: 0 };
+  return { kind: "cross", fee: Number(account.crossBankFee) || 0 };
+}
+
+// 匯入的對帳單流水只判定一次（autoJudged），之後使用者手動改的內容不會被蓋掉。
+// 對帳單的扣款金額已含手續費，所以拆成「金額＋手續費」，兩者相加不變，帳戶餘額也不變。
+function autoJudgeImported(f) {
+  f.ledger.forEach(e => {
+    if (e.source !== "import" || e.autoJudged) return;
+    const account = f.accounts.find(a => a.id === e.accountId);
+    if (!account) return;
+    e.autoJudged = true;
+    const linked = (e.allocations || []).reduce((s, a) => s + a.amount, 0) + (e.splits || []).reduce((s, x) => s + x.amount, 0);
+    const j = judgeBankTransfer(`${e.ref || ""} ${e.counterparty || ""}`, e.type, account, f.accounts);
+    if (j.kind === "transfer" && !linked && !e.loanId) {
+      e.category = FIN_TRANSFER_LABEL;
+      e.noMatch = true;
+      e.transferGroup = "tg-" + e.id;
+      e.autoTransfer = true;
+      if (!e.counterparty) e.counterparty = `${e.type === "income" ? "轉自" : "轉入"} ${j.target.name}`;
+    } else if (j.kind === "cross" && j.fee > 0 && !e.fee && e.amount - j.fee >= Math.max(linked, 1)) {
+      e.amount -= j.fee;
+      e.fee = j.fee;
+    }
+  });
+}
+
+// 銀行帳戶代碼：第一銀行 T1、台北富邦 T2，其他銀行帳戶從 T3 往下編（可在銀行帳戶頁修改）
+function assignAccountCodes(f) {
+  // 銀行代碼和跨行手續費：第一銀行、台北富邦每筆 10 元，其他帳戶到銀行帳戶頁設定
+  f.accounts.filter(a => a.type === "bank").forEach(a => {
+    const label = `${a.name || ""} ${a.bankName || ""}`;
+    if (a.bankCode === undefined) a.bankCode = (FIN_BANK_CODE_GUESS.find(([re]) => re.test(label)) || [])[1] || "";
+    if (a.crossBankFee === undefined) a.crossBankFee = /第一|富邦/.test(label) ? 10 : 0;
+  });
+  const used = new Set(f.accounts.map(a => a.code).filter(Boolean));
+  f.accounts.filter(a => a.type === "bank" && !a.code).forEach(a => {
+    const label = `${a.name || ""} ${a.bankName || ""}`;
+    let code = /第一/.test(label) ? "T1" : /富邦/.test(label) ? "T2" : "";
+    if (!code || used.has(code)) {
+      let n = 3;
+      while (used.has("T" + n)) n++;
+      code = "T" + n;
+    }
+    a.code = code;
+    used.add(code);
+  });
+}
+
+// 流水編號：代碼 + 兩位數月份 + 當月流水號，例如 T1 + 09 + 01 = T10901。
+// 流水號依「帳戶＋年月」各自累計（超過 99 筆時會變成三位數）；已編好的號碼不會因為刪除其他筆而變動。
+function assignFinanceNumbers(f) {
+  assignAccountCodes(f);
+  autoJudgeImported(f);
+  const codes = Object.fromEntries(f.accounts.filter(a => a.code).map(a => [a.id, a.code]));
+  const pending = f.ledger.filter(e => !e.no && codes[e.accountId] && e.date);
+  if (!pending.length) return syncInvoicePayments(f);
+  const last = {};
+  const key = e => `${e.accountId}|${e.date.slice(0, 7)}`;
+  f.ledger.forEach(e => {
+    const code = codes[e.accountId];
+    if (!e.no || !code || !e.date) return;
+    const seq = Number(e.no.slice(code.length + 2)) || 0;
+    last[key(e)] = Math.max(last[key(e)] || 0, seq);
+  });
+  pending.sort((a, b) => a.date.localeCompare(b.date) || (a.seq || 0) - (b.seq || 0)).forEach(e => {
+    const seq = (last[key(e)] || 0) + 1;
+    last[key(e)] = seq;
+    e.no = codes[e.accountId] + e.date.slice(5, 7) + String(seq).padStart(2, "0");
+  });
+  syncInvoicePayments(f);
+}
+
+// 發票的支出單號、付款日期、付款方式跟著連結的流水走。第一次連結時先記下原本的內容（prePay），
+// 全部取消連結時還原。付不足額（例如先付訂金）時，付款方式顯示「部分總額」。
+function syncInvoicePayments(f) {
+  const pays = {};
+  f.ledger.forEach(e => (e.allocations || []).forEach(a => { (pays[a.invoiceId] = pays[a.invoiceId] || []).push({ no: e.no || "", date: e.date, amount: a.amount }); }));
+  f.invoices.forEach(inv => {
+    const list = pays[inv.id];
+    if (!list) {
+      if (inv.prePay) { Object.assign(inv, inv.prePay); delete inv.prePay; }
+      return;
+    }
+    if (!inv.prePay) inv.prePay = { expenseNo: inv.expenseNo || "", payDate: inv.payDate || "", payMethod: inv.payMethod || "" };
+    list.sort((a, b) => a.date.localeCompare(b.date));
+    inv.expenseNo = [...new Set(list.map(p => p.no).filter(Boolean))].join("、");
+    inv.payDate = list[list.length - 1].date;
+    if (inv.kind !== "purchase") return;
+    const paid = list.reduce((s, p) => s + p.amount, 0);
+    const before = inv.prePay.payMethod;
+    inv.payMethod = paid < inv.total ? "部分總額" : (!before || before === "未付" || before === "部分總額" ? "轉帳" : before);
+  });
 }
 
 function loadDB() {
@@ -81,6 +200,7 @@ function loadDB() {
 }
 
 function saveDB(db) {
+  if (db.finance) assignFinanceNumbers(db.finance);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
 }
 

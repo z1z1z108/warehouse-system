@@ -500,21 +500,23 @@ function bindClientSettings() {
     showMsg("client-settings-msg", "已儲存");
   };
   document.getElementById("add-warehouse-btn").onclick = () => {
-    const name = prompt("請輸入倉庫名稱");
-    if (!name) return;
-    db.warehouses.push({ id: "w" + Date.now(), clientId: c.id, name });
-    saveDB(db);
-    render();
+    appPrompt("請輸入倉庫名稱", "", name => {
+      if (!name) return;
+      db.warehouses.push({ id: "w" + Date.now(), clientId: c.id, name });
+      saveDB(db);
+      render();
+    });
   };
   document.querySelectorAll(".rename-warehouse-btn").forEach(btn => {
     btn.onclick = () => {
       const id = btn.dataset.renameWarehouse;
       const wh = db.warehouses.find(w => w.id === id);
-      const name = prompt("請輸入新的倉庫名稱", wh.name);
-      if (!name) return;
-      wh.name = name;
-      saveDB(db);
-      render();
+      appPrompt("請輸入新的倉庫名稱", wh.name, name => {
+        if (!name) return;
+        wh.name = name;
+        saveDB(db);
+        render();
+      });
     };
   });
   document.querySelectorAll(".delete-warehouse-btn").forEach(btn => {
@@ -525,11 +527,12 @@ function bindClientSettings() {
         alert("此倉庫尚有庫存（庫存不為 0），無法刪除，請先將庫存異動清空");
         return;
       }
-      if (!confirm(`確定要刪除「${warehouseName(id)}」嗎？`)) return;
-      db.warehouses = db.warehouses.filter(w => w.id !== id);
-      db.serialUnits = db.serialUnits.filter(s => s.warehouseId !== id);
-      saveDB(db);
-      render();
+      appConfirm(`確定要刪除「${warehouseName(id)}」嗎？`, () => {
+        db.warehouses = db.warehouses.filter(w => w.id !== id);
+        db.serialUnits = db.serialUnits.filter(s => s.warehouseId !== id);
+        saveDB(db);
+        render();
+      }, { okLabel: "刪除", danger: true });
     };
   });
   document.getElementById("delete-client-btn")?.addEventListener("click", () => {
@@ -539,13 +542,14 @@ function bindClientSettings() {
       alert("此客戶旗下倉庫尚有庫存，無法刪除，請先將庫存異動清空");
       return;
     }
-    if (!confirm(`確定要刪除客戶「${c.name}」嗎？此動作將一併移除旗下所有倉庫。`)) return;
-    db.warehouses = db.warehouses.filter(w => w.clientId !== c.id);
-    db.users = db.users.filter(u => u.clientId !== c.id);
-    db.clients = db.clients.filter(x => x.id !== c.id);
-    saveDB(db);
-    view.page = "home";
-    render();
+    appConfirm(`確定要刪除客戶「${c.name}」嗎？此動作將一併移除旗下所有倉庫。`, () => {
+      db.warehouses = db.warehouses.filter(w => w.clientId !== c.id);
+      db.users = db.users.filter(u => u.clientId !== c.id);
+      db.clients = db.clients.filter(x => x.id !== c.id);
+      saveDB(db);
+      view.page = "home";
+      render();
+    }, { okLabel: "刪除", danger: true });
   });
 }
 
@@ -647,10 +651,11 @@ function bindClientNew() {
     render();
   };
   document.getElementById("add-new-client-warehouse-btn").onclick = () => {
-    const name = prompt("請輸入倉庫名稱");
-    if (!name) return;
-    draftNewClient.warehouses.push(name);
-    render();
+    appPrompt("請輸入倉庫名稱", "", name => {
+      if (!name) return;
+      draftNewClient.warehouses.push(name);
+      render();
+    });
   };
   document.querySelectorAll(".remove-new-client-warehouse-btn").forEach(btn => {
     btn.onclick = () => {
@@ -661,10 +666,11 @@ function bindClientNew() {
   document.querySelectorAll(".rename-new-client-warehouse-btn").forEach(btn => {
     btn.onclick = () => {
       const idx = +btn.dataset.renameNewWarehouse;
-      const name = prompt("請輸入新的倉庫名稱", draftNewClient.warehouses[idx]);
-      if (!name) return;
-      draftNewClient.warehouses[idx] = name;
-      render();
+      appPrompt("請輸入新的倉庫名稱", draftNewClient.warehouses[idx], name => {
+        if (!name) return;
+        draftNewClient.warehouses[idx] = name;
+        render();
+      });
     };
   });
 }
@@ -1358,12 +1364,12 @@ function editRemark(productId, warehouseId, serial) {
   const units = db.serialUnits.filter(s => s.productId === productId && s.warehouseId === warehouseId && (serial ? s.serialNo === serial : !s.serialNo));
   if (!units.length) return;
   const current = (units.find(s => s.remark) || {}).remark || "";
-  const input = prompt(serial ? `編輯序號 ${serial} 的備註（留空可清除）` : `編輯此批 ${units.length} 件的備註（留空可清除）`, current);
-  if (input === null) return;
-  const value = input.trim();
-  units.forEach(s => { if (value) s.remark = value; else delete s.remark; });
-  saveDB(db);
-  render();
+  appPrompt(serial ? `編輯序號 ${serial} 的備註（留空可清除）` : `編輯此批 ${units.length} 件的備註（留空可清除）`, current, input => {
+    const value = input.trim();
+    units.forEach(s => { if (value) s.remark = value; else delete s.remark; });
+    saveDB(db);
+    render();
+  });
 }
 
 // 從明細頁帶著料號／序號直接開啟入庫、出庫、調撥表單
