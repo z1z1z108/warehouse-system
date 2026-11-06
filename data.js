@@ -18,7 +18,7 @@ const DEFAULT_DB = {
   // 異動紀錄：每一筆入庫/出庫都是單一序號的異動，並記錄時間
   movements: [],
   // 財務會計（僅震浤管理員可用）：發票、多帳戶流水帳、銀行帳戶、貸款，與庫存各自獨立
-  finance: { invoices: [], ledger: [], accounts: [], loans: [] },
+  finance: { invoices: [], ledger: [], accounts: [], loans: [], vendors: [] },
 };
 
 // 補齊財務欄位，並把舊版（收款獨立存放、收支帳沒有帳戶）升級成「多帳戶流水帳」。可重複執行。
@@ -26,6 +26,11 @@ function ensureFinanceData(d) {
   if (!d.finance || typeof d.finance !== "object") d.finance = {};
   const f = d.finance;
   ["invoices", "ledger", "accounts", "loans"].forEach(k => { if (!Array.isArray(f[k])) f[k] = []; });
+  // 廠商記憶：第一次升級時從既有進項發票帶入；之後獨立保存，刪除發票不會忘記廠商
+  if (!Array.isArray(f.vendors)) {
+    const names = [...new Set(f.invoices.filter(i => i.kind === "purchase" && i.vendor).map(i => i.vendor))];
+    f.vendors = names.map(name => ({ name, lastUsed: 0 }));
+  }
   if (!f.accounts.length) f.accounts.push({ id: "acc-cash", name: "現金", type: "cash", openingBalance: 0 });
   const defaultAccountId = f.accounts[0].id;
   // 舊版的收款（payments）併入流水帳：一筆收款就是一筆「客戶入帳」
