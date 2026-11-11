@@ -138,7 +138,8 @@ function finDownloadCSV(filename, rows) {
   link.click();
 }
 function finStatusBadge(label) {
-  const cls = label === FIN_PAY_NONE ? "bg-slate-100 text-slate-500" : /^已/.test(label) ? "bg-emerald-100 text-emerald-700" : /^部分/.test(label) ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700";
+  // 未付／未收紅色、部分黃色、不支出灰色，其餘（已付、已收、現金、轉帳、自動扣款等付款方式）綠色
+  const cls = label === FIN_PAY_NONE ? "bg-slate-100 text-slate-500" : /^部分/.test(label) ? "bg-amber-100 text-amber-700" : !label || /^未/.test(label) ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700";
   return `<span class="px-2 py-0.5 rounded-full text-xs whitespace-nowrap ${cls}">${label}</span>`;
 }
 function finBindFilter(id, obj, key, afterChange) {
@@ -203,7 +204,9 @@ function finSettlement() {
     }
     const outstanding = Math.max(0, inv.total - p);
     const linkRemaining = inv.payMethod === FIN_PAY_CASH ? 0 : Math.max(0, inv.total - ledgerPaid);
-    out[inv.id] = { paid: p, ledgerPaid, linkRemaining, total: inv.total, outstanding, state, status: finStateLabel(inv.kind, state) };
+    // 進項發票的「狀態」直接顯示付款方式（現金、轉帳、自動扣款、未付…）；銷項維持未收／部分收款／已收
+    const status = inv.kind === "purchase" ? (inv.payMethod || FIN_PAY_UNPAID) : finStateLabel(inv.kind, state);
+    out[inv.id] = { paid: p, ledgerPaid, linkRemaining, total: inv.total, outstanding, state, status };
   });
   return out;
 }
@@ -339,7 +342,7 @@ function finFilteredInvoices(st, skipColumnFilters) {
   let rows = db.finance.invoices.slice().sort((a, b) => (b.date + b.number).localeCompare(a.date + a.number));
   if (f.kind) rows = rows.filter(i => i.kind === f.kind);
   if (f.month) rows = rows.filter(i => finMonthOf(i.date) === f.month);
-  // 付款狀態篩選和清單「狀態」欄用同一組文字（未付／部分付款／已付／不支出），選什麼就只列出狀態欄顯示那樣的發票
+  // 付款狀態篩選和清單「狀態」欄用同一組文字（進項就是付款方式），選什麼就只列出狀態欄顯示那樣的發票
   if (f.status) rows = rows.filter(i => st[i.id]?.status === f.status);
   const pays = finInvoicePayments();
   const q = f.q.trim().toLowerCase();
@@ -635,7 +638,7 @@ function finRenderInvoices() {
         <label class="text-xs text-slate-500">${isSales ? "收款狀態" : "付款狀態"}</label>
         <select id="inv-f-status" class="w-full border rounded-lg px-3 py-1.5 text-sm mt-1">
           <option value="">全部</option>
-          ${(isSales ? ["未收", "部分收款", "已收"] : ["未付", "部分付款", "已付", FIN_PAY_NONE]).map(s => `<option value="${s}" ${f.status === s ? "selected" : ""}>${s}</option>`).join("")}
+          ${(isSales ? ["未收", "部分收款", "已收"] : [...new Set([...FIN_PAY_METHODS, ...db.finance.invoices.filter(i => i.kind === "purchase" && i.payMethod).map(i => i.payMethod)])]).map(s => `<option value="${s}" ${f.status === s ? "selected" : ""}>${s}</option>`).join("")}
         </select>
       </div>
       <div>
