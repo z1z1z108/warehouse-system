@@ -417,7 +417,7 @@ function finFilteredLedger(ctx) {
     const invById = Object.fromEntries(db.finance.invoices.map(i => [i.id, i]));
     rows = rows.filter(e => {
       const invNos = (e.allocations || []).map(a => invById[a.invoiceId]?.number || "").join(" ");
-      const splits = (e.splits || []).map(x => `${x.name} ${x.category || ""} ${x.note || ""}`).join(" ");
+      const splits = (e.splits || []).map(x => [x.name, x.vendor, x.payee, x.item, x.number, x.project, x.category, x.note].filter(Boolean).join(" ")).join(" ");
       return `${e.no || ""} ${e.category || ""} ${e.counterparty || ""} ${e.content || ""} ${e.ref || ""} ${e.note || ""} ${e.amount} ${invNos} ${splits}`.toLowerCase().includes(q);
     });
   }
@@ -900,42 +900,98 @@ function finBindEntryEdit() {
 // ============================================================
 // 拆分明細（整批支出，例如薪資：銀行只有一筆，實際是很多人）
 // ============================================================
+// 每一筆拆分的欄位跟進項發票一樣：一筆整批匯款裡可能包含很多張發票、不同廠商和員工。
+// amount 是含稅總額（拆分合計、類別統計都用它）；net、tax 是未稅和稅額。
+// name 是給搜尋和匯出用的顯示名稱（收款方 → 廠商 → 品項）。舊版只有 name，載入時當成收款方。
+const FIN_SPLIT_TAXED = ["電子發票", "統一發票", "三聯式發票"];
+function finSplitIsTaxed(voucherType) { return FIN_SPLIT_TAXED.includes(voucherType); }
+function finSplitLabel(x) { return x.payee || x.vendor || x.item || x.name || ""; }
+function finSplitToRow(x) {
+  const legacy = x.payee === undefined && x.vendor === undefined && x.item === undefined;
+  return {
+    id: x.id, date: x.date || "", voucherType: x.voucherType || (legacy ? "其他" : FIN_VOUCHER_TYPES[0]), number: x.number || "",
+    vendor: x.vendor || "", payee: legacy ? (x.name || "") : (x.payee || ""), category: x.category || "", project: x.project || "",
+    item: x.item || "", net: x.net !== undefined ? String(x.net) : (legacy ? String(x.amount) : ""),
+    tax: x.tax !== undefined ? String(x.tax) : (legacy ? "0" : ""), amount: String(x.amount ?? ""), note: x.note || "", taxTouched: true,
+  };
+}
+function finSplitBlankRow(e, prev) {
+  return { date: prev?.date || e.date || "", voucherType: prev?.voucherType || FIN_VOUCHER_TYPES[0], number: "", vendor: "", payee: "",
+    category: prev?.category || e.category || "", project: prev?.project || "", item: "", net: "", tax: "", amount: "", note: "", taxTouched: false };
+}
 function finSplitDetailHtml(e) {
   const rest = e.amount - finEntrySplitTotal(e) - finEntryAllocated(e);
+  const cell = v => finEsc(v) || `<span class="text-slate-300">-</span>`;
+  const money = v => v === undefined || v === "" ? `<span class="text-slate-300">-</span>` : finMoney(v);
   return `
-    <table class="w-full text-xs bg-white border rounded">
-      <thead class="text-slate-500 text-left"><tr><th class="px-3 py-1.5">明細編號</th><th class="px-3 py-1.5">項目／對象</th><th class="px-3 py-1.5">類別</th><th class="px-3 py-1.5">備註</th><th class="px-3 py-1.5 text-right">金額</th></tr></thead>
-      <tbody>${e.splits.map((x, i) => `
+    <div class="overflow-x-auto">
+    <table class="w-full text-xs bg-white border rounded" style="min-width: 1100px">
+      <thead class="text-slate-500 text-left"><tr>
+        <th class="px-3 py-1.5">明細編號</th><th class="px-3 py-1.5">發票日期</th><th class="px-3 py-1.5">憑證／號碼</th><th class="px-3 py-1.5">廠商</th><th class="px-3 py-1.5">收款方</th>
+        <th class="px-3 py-1.5">類別</th><th class="px-3 py-1.5">專案/工程</th><th class="px-3 py-1.5">品項</th>
+        <th class="px-3 py-1.5 text-right">未稅</th><th class="px-3 py-1.5 text-right">稅額</th><th class="px-3 py-1.5 text-right">含稅總額</th><th class="px-3 py-1.5">備註</th>
+      </tr></thead>
+      <tbody>${e.splits.map((x, i) => { const r = finSplitToRow(x); return `
         <tr class="border-t">
-          <td class="px-3 py-1.5 font-mono">${e.no ? `${finEsc(e.no)}-${i + 1}` : i + 1}</td>
-          <td class="px-3 py-1.5">${finEsc(x.name)}</td>
-          <td class="px-3 py-1.5">${finEsc(x.category || e.category) || "未分類"}</td>
-          <td class="px-3 py-1.5 text-slate-500">${finEsc(x.note) || "-"}</td>
-          <td class="px-3 py-1.5 text-right font-medium">${finMoney(x.amount)}</td>
-        </tr>`).join("")}
+          <td class="px-3 py-1.5 font-mono whitespace-nowrap">${e.no ? `${finEsc(e.no)}-${i + 1}` : i + 1}</td>
+          <td class="px-3 py-1.5 whitespace-nowrap">${cell(r.date)}</td>
+          <td class="px-3 py-1.5 whitespace-nowrap">${finEsc(r.voucherType)}${r.number ? `<div class="font-mono text-slate-500">${finEsc(r.number)}</div>` : ""}</td>
+          <td class="px-3 py-1.5">${cell(r.vendor)}</td>
+          <td class="px-3 py-1.5">${cell(r.payee)}</td>
+          <td class="px-3 py-1.5 whitespace-nowrap">${finEsc(r.category || e.category) || "未分類"}</td>
+          <td class="px-3 py-1.5">${cell(r.project)}</td>
+          <td class="px-3 py-1.5">${cell(r.item)}</td>
+          <td class="px-3 py-1.5 text-right whitespace-nowrap">${money(x.net ?? x.amount)}</td>
+          <td class="px-3 py-1.5 text-right whitespace-nowrap">${money(x.tax ?? 0)}</td>
+          <td class="px-3 py-1.5 text-right font-medium whitespace-nowrap">${finMoney(x.amount)}</td>
+          <td class="px-3 py-1.5 text-slate-500">${cell(r.note)}</td>
+        </tr>`; }).join("")}
       </tbody>
     </table>
+    </div>
     ${rest > 0 ? `<p class="text-xs text-amber-600 mt-1 text-right">尚有 ${finMoney(rest)} 未拆分</p>` : ""}`;
 }
 function finSplitRow(r, idx) {
+  const inp = (field, label, extra = "", cls = "") => `<label class="block"><span class="text-xs text-slate-500">${label}</span><input data-field="${field}" value="${finEsc(r[field])}" aria-label="第 ${idx + 1} 筆${label}" class="w-full border rounded px-2 py-1.5 text-sm mt-0.5 ${cls}" ${extra}/></label>`;
+  const money = (field, label) => inp(field, label, `type="number" min="0" step="1"`, "text-right");
+  const vouchers = FIN_VOUCHER_TYPES.includes(r.voucherType) || !r.voucherType ? FIN_VOUCHER_TYPES : [...FIN_VOUCHER_TYPES, r.voucherType];
   return `
-  <tr data-idx="${idx}" class="border-t">
-    <td class="px-2 py-1 text-xs text-slate-400 text-center">${idx + 1}</td>
-    <td class="px-2 py-1"><input data-field="name" value="${finEsc(r.name)}" aria-label="第 ${idx + 1} 行項目" class="w-full border rounded px-2 py-1.5 text-sm" placeholder="例：員工姓名"/></td>
-    <td class="px-2 py-1"><select data-field="category" aria-label="第 ${idx + 1} 行類別" class="w-full border rounded px-2 py-1.5 text-sm">${finCategoryOptions("expense", r.category)}</select></td>
-    <td class="px-2 py-1"><input data-field="amount" type="number" min="0" step="1" value="${finEsc(r.amount)}" aria-label="第 ${idx + 1} 行金額" class="w-full border rounded px-2 py-1.5 text-sm text-right"/></td>
-    <td class="px-2 py-1"><input data-field="note" value="${finEsc(r.note)}" aria-label="第 ${idx + 1} 行備註" class="w-full border rounded px-2 py-1.5 text-sm" placeholder="選填"/></td>
-    <td class="px-2 py-1 text-center"><button type="button" class="sp-del text-slate-400 hover:text-rose-500 px-1" title="移除這行" aria-label="移除第 ${idx + 1} 行">✕</button></td>
-  </tr>`;
+  <div data-idx="${idx}" class="sp-row border rounded-lg p-3 mb-2 bg-white">
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-xs font-semibold text-slate-500">第 ${idx + 1} 筆</span>
+      <button type="button" class="sp-del text-slate-400 hover:text-rose-500 text-xs" aria-label="移除第 ${idx + 1} 筆">✕ 移除</button>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+      ${inp("date", "發票日期", `type="date"`)}
+      <label class="block"><span class="text-xs text-slate-500">憑證類別</span><select data-field="voucherType" aria-label="第 ${idx + 1} 筆憑證類別" class="w-full border rounded px-2 py-1.5 text-sm mt-0.5">${vouchers.map(v => `<option value="${finEsc(v)}" ${v === r.voucherType ? "selected" : ""}>${finEsc(v)}</option>`).join("")}</select></label>
+      ${inp("number", "發票/收據號碼", `placeholder="選填"`)}
+      ${inp("vendor", "開立公司（廠商）", `list="sp-vendor-list" autocomplete="off" placeholder="選填"`)}
+      ${inp("payee", "收款方（廠商／員工）", `list="sp-payee-list" autocomplete="off" placeholder="例：員工姓名"`)}
+      <label class="block"><span class="text-xs text-slate-500">類別</span><select data-field="category" aria-label="第 ${idx + 1} 筆類別" class="w-full border rounded px-2 py-1.5 text-sm mt-0.5">${finCategoryOptions("expense", r.category)}</select></label>
+      ${inp("project", "專案/工程", `list="sp-project-list" autocomplete="off" placeholder="選填"`)}
+      <div class="col-span-2 md:col-span-1 lg:col-span-2">${inp("item", "品項", `placeholder="例：RFK-7997、差旅費"`)}</div>
+      ${money("net", "未稅")}
+      ${money("tax", "稅額")}
+      ${money("amount", "含稅總額")}
+    </div>
+    <div class="mt-2">${inp("note", "備註", `placeholder="選填"`)}</div>
+  </div>`;
 }
 function finRenderEntrySplit() {
   const e = db.finance.ledger.find(x => x.id === view.finEntryId);
   if (!e) return `<p class="text-slate-400">找不到這筆流水</p>`;
   if (!finSplitDraft || finSplitDraft.entryId !== e.id) {
-    const rows = (e.splits || []).map(x => ({ id: x.id, name: x.name, category: x.category || "", amount: String(x.amount), note: x.note || "" }));
-    finSplitDraft = { entryId: e.id, rows: rows.length ? rows : [{ name: "", category: e.category || "", amount: "", note: "" }] };
+    const rows = (e.splits || []).map(finSplitToRow);
+    finSplitDraft = { entryId: e.id, rows: rows.length ? rows : [finSplitBlankRow(e)] };
   }
   const allocated = finEntryAllocated(e);
+  const uniq = list => [...new Set(list.filter(Boolean))];
+  const allSplits = db.finance.ledger.flatMap(x => x.splits || []);
+  const vendors = uniq(finVendorsSorted().map(v => v.name));
+  const employees = db.hr && typeof hrActiveEmployees === "function" ? hrActiveEmployees().map(x => x.name) : [];
+  const payees = uniq([...employees, ...allSplits.map(finSplitLabel), ...db.finance.invoices.map(i => i.payee), ...vendors]);
+  const projects = uniq([...db.finance.invoices.map(i => i.project), ...allSplits.map(x => x.project)]);
+  const opts = list => list.map(v => `<option value="${finEsc(v)}"></option>`).join("");
   return `
   <div class="bg-white rounded-xl shadow-sm p-5 mb-4">
     <div class="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
@@ -947,13 +1003,12 @@ function finRenderEntrySplit() {
     </div>
   </div>
   <div class="bg-white rounded-xl shadow-sm p-5">
-    <div class="border rounded-lg overflow-x-auto">
-      <table class="w-full text-sm" style="min-width: 640px">
-        <thead class="bg-slate-50 text-xs text-slate-500 text-left"><tr><th class="px-2 py-1.5 w-8 text-center">#</th><th class="px-2 py-1.5">項目／對象</th><th class="px-2 py-1.5 w-48">類別</th><th class="px-2 py-1.5 w-32 text-right">金額</th><th class="px-2 py-1.5">備註</th><th class="px-2 py-1.5 w-8"></th></tr></thead>
-        <tbody id="sp-rows">${finSplitDraft.rows.map(finSplitRow).join("")}</tbody>
-      </table>
-    </div>
-    <button type="button" id="sp-add" class="text-sm text-blue-600 hover:underline mt-2">＋ 新增一行</button>
+    <p class="text-xs text-slate-500 mb-3">一筆整批匯款可以拆成多張發票、不同廠商或員工。填未稅會自動算 5% 稅額（收據、其他不算稅）；也可以直接填含稅總額。</p>
+    <datalist id="sp-vendor-list">${opts(vendors)}</datalist>
+    <datalist id="sp-payee-list">${opts(payees)}</datalist>
+    <datalist id="sp-project-list">${opts(projects)}</datalist>
+    <div id="sp-rows" class="bg-slate-50 rounded-lg p-2">${finSplitDraft.rows.map(finSplitRow).join("")}</div>
+    <button type="button" id="sp-add" class="text-sm text-blue-600 hover:underline mt-2">＋ 新增一筆</button>
     <p class="text-sm mt-3">流水金額 <b>${finMoney(e.amount)}</b>${allocated ? `　｜　已核對發票 <b>${finMoney(allocated)}</b>` : ""}　｜　已拆分 <b id="sp-total">0</b>　｜　未拆分 <b id="sp-rest">0</b></p>
     <div class="mt-4">
       <button id="sp-save-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">儲存拆分</button>
@@ -967,49 +1022,91 @@ function finBindEntrySplit() {
   const e = db.finance.ledger.find(x => x.id === view.finEntryId);
   if (!e || !finSplitDraft) return;
   const d = finSplitDraft;
-  const tbody = $("sp-rows");
+  const box = $("sp-rows");
   const allocated = finEntryAllocated(e);
+  const num = v => Number(v) || 0;
   const totals = () => {
-    const sum = d.rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    const sum = d.rows.reduce((s, r) => s + num(r.amount), 0);
     const rest = e.amount - allocated - sum;
     $("sp-total").textContent = finMoney(sum);
     $("sp-rest").textContent = finMoney(rest);
     $("sp-rest").className = rest < 0 ? "text-rose-600" : rest > 0 ? "text-amber-600" : "text-emerald-600";
   };
-  const paint = () => { tbody.innerHTML = d.rows.map(finSplitRow).join(""); totals(); };
-  tbody.oninput = ev => {
+  // 未稅、稅額、含稅總額互相帶：填未稅 → 算稅額和總額；填總額 → 倒推未稅和稅額；改稅額 → 總額 = 未稅 + 稅額
+  const recalc = (r, field) => {
+    const taxed = finSplitIsTaxed(r.voucherType);
+    if (field === "net" || field === "voucherType") {
+      if (field === "voucherType") r.taxTouched = false;
+      if (String(r.net).trim() === "" && field === "voucherType" && String(r.amount).trim() !== "") field = "amount";
+      else {
+        if (!r.taxTouched) r.tax = String(taxed ? Math.round(num(r.net) * FIN_TAX_RATE) : 0);
+        r.amount = String(r.net).trim() === "" ? "" : String(num(r.net) + num(r.tax));
+      }
+    }
+    if (field === "amount") {
+      r.taxTouched = false;
+      const total = num(r.amount);
+      const net = taxed ? Math.round(total / (1 + FIN_TAX_RATE)) : total;
+      r.net = String(r.amount).trim() === "" ? "" : String(net);
+      r.tax = String(r.amount).trim() === "" ? "" : String(total - net);
+    }
+    if (field === "tax") {
+      r.taxTouched = true;
+      r.amount = String(num(r.net) + num(r.tax));
+    }
+  };
+  const syncInputs = (rowEl, r) => ["net", "tax", "amount"].forEach(f => { const el = rowEl.querySelector(`[data-field="${f}"]`); if (el && el !== document.activeElement) el.value = r[f]; });
+  const paint = () => { box.innerHTML = d.rows.map(finSplitRow).join(""); totals(); };
+  const onField = ev => {
     const field = ev.target.dataset.field;
     if (!field) return;
-    d.rows[Number(ev.target.closest("tr").dataset.idx)][field] = ev.target.value;
+    const rowEl = ev.target.closest(".sp-row");
+    const r = d.rows[Number(rowEl.dataset.idx)];
+    r[field] = ev.target.value;
+    if (["net", "tax", "amount", "voucherType"].includes(field)) { recalc(r, field); syncInputs(rowEl, r); }
     totals();
   };
-  tbody.onclick = ev => {
+  box.oninput = onField;
+  box.onchange = ev => { if (ev.target.tagName === "SELECT") onField(ev); };
+  box.onclick = ev => {
     if (!ev.target.closest(".sp-del")) return;
-    d.rows.splice(Number(ev.target.closest("tr").dataset.idx), 1);
-    if (!d.rows.length) d.rows.push({ name: "", category: e.category || "", amount: "", note: "" });
+    d.rows.splice(Number(ev.target.closest(".sp-row").dataset.idx), 1);
+    if (!d.rows.length) d.rows.push(finSplitBlankRow(e));
     paint();
   };
   $("sp-add").onclick = () => {
-    d.rows.push({ name: "", category: e.category || "", amount: "", note: "" });
+    d.rows.push(finSplitBlankRow(e, d.rows[d.rows.length - 1]));
     paint();
-    tbody.querySelector("tr:last-child [data-field='name']").focus();
+    box.querySelector(".sp-row:last-child [data-field='payee']").focus();
   };
   $("sp-cancel-btn").onclick = () => { finSplitDraft = null; goBack(); };
   $("sp-save-btn").onclick = () => {
     const fail = msg => showMsg("sp-msg", msg, true);
     const splits = [];
+    const vendorsToRemember = [];
     for (let n = 0; n < d.rows.length; n++) {
       const r = d.rows[n];
-      const name = r.name.trim();
-      if (!name && String(r.amount).trim() === "") continue;   // 整行空白的略過
-      if (!name) return fail(`第 ${n + 1} 行請輸入項目／對象`);
+      const t = k => String(r[k] ?? "").trim();
+      const hasText = ["number", "vendor", "payee", "item", "net", "amount", "note"].some(k => t(k));
+      if (!hasText) continue;   // 整筆空白的略過
+      if (!t("vendor") && !t("payee") && !t("item")) return fail(`第 ${n + 1} 筆請至少填廠商、收款方或品項其中一項`);
       const amount = finParseAmount(r.amount, false);
-      if (amount === null) return fail(`第 ${n + 1} 行的金額請輸入大於 0 的整數`);
-      splits.push({ id: r.id || finId("spl"), name, category: r.category.trim(), amount, note: r.note.trim() });
+      if (amount === null) return fail(`第 ${n + 1} 筆的含稅總額請輸入大於 0 的整數`);
+      const net = t("net") === "" ? amount : finParseAmount(r.net, true);
+      const tax = t("tax") === "" ? amount - (net ?? amount) : finParseAmount(r.tax, true);
+      if (net === null || tax === null) return fail(`第 ${n + 1} 筆的未稅或稅額請輸入整數`);
+      if (net + tax !== amount) return fail(`第 ${n + 1} 筆：未稅 ${finMoney(net)} ＋ 稅額 ${finMoney(tax)} 不等於含稅總額 ${finMoney(amount)}`);
+      const vendor = t("vendor") ? finCanonicalVendor(t("vendor")) : "";
+      if (vendor) vendorsToRemember.push(vendor);
+      const x = { id: r.id || finId("spl"), date: t("date"), voucherType: r.voucherType || FIN_VOUCHER_TYPES[0], number: t("number"), vendor, payee: t("payee"),
+        category: t("category"), project: t("project"), item: t("item"), net, tax, amount, note: t("note") };
+      x.name = finSplitLabel(x);
+      splits.push(x);
     }
     const sum = splits.reduce((s, x) => s + x.amount, 0);
     if (sum + allocated > e.amount) return fail(`拆分合計 ${finMoney(sum)}${allocated ? ` 加上已核對發票 ${finMoney(allocated)}` : ""} 超過這筆流水的金額 ${finMoney(e.amount)}`);
     if (splits.length) { e.splits = splits; finLedgerExpanded.add(e.id); } else delete e.splits;
+    vendorsToRemember.forEach(finRememberVendor);
     saveDB(db);
     finSplitDraft = null;
     goBack();

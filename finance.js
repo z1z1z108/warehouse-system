@@ -189,14 +189,19 @@ function finSettlement() {
       out[inv.id] = { paid: 0, ledgerPaid: 0, linkRemaining: 0, total: inv.total, outstanding: 0, state: "settled", status: FIN_PAY_NONE };
       return;
     }
-    // 付款方式和狀態連動：現金、轉帳就算已付（轉帳還沒連到流水也一樣）；
-    // 但轉帳仍可再連結流水，所以另外算 linkRemaining（扣掉已連結流水後還能連多少）給流水帳核對用
+    // 進項發票的狀態直接跟付款方式一致：未付→未付、部分總額→部分付款、轉帳／現金／自動扣款→已付。
+    // （連結流水時 syncInvoicePayments 會把付款方式改成轉帳或部分總額，狀態也就跟著變）
+    // 轉帳、自動扣款仍可再連結流水，所以另外算 linkRemaining（扣掉已連結流水後還能連多少）給流水帳核對用
     const ledgerPaid = paid[inv.id] || 0;
-    const isPurchase = inv.kind === "purchase";
-    const manualPaid = isPurchase && (inv.payMethod === FIN_PAY_CASH || (inv.payMethod === FIN_PAY_TRANSFER && !ledgerPaid));
-    const p = manualPaid ? inv.total : ledgerPaid;
+    let p, state;
+    if (inv.kind === "purchase") {
+      state = !inv.payMethod || inv.payMethod === FIN_PAY_UNPAID ? "open" : inv.payMethod === FIN_PAY_PARTIAL ? "partial" : "settled";
+      p = state === "settled" ? inv.total : state === "partial" ? Math.min(ledgerPaid, inv.total) : 0;
+    } else {
+      p = ledgerPaid;
+      state = inv.total - p <= 0 ? "settled" : p > 0 ? "partial" : "open";
+    }
     const outstanding = Math.max(0, inv.total - p);
-    const state = outstanding <= 0 ? "settled" : p > 0 ? "partial" : "open";
     const linkRemaining = inv.payMethod === FIN_PAY_CASH ? 0 : Math.max(0, inv.total - ledgerPaid);
     out[inv.id] = { paid: p, ledgerPaid, linkRemaining, total: inv.total, outstanding, state, status: finStateLabel(inv.kind, state) };
   });
@@ -312,24 +317,22 @@ function finInvoiceSearchText(i) {
 }
 // ---- 發票清單的欄位篩選（點欄位標題旁的 ▼，和庫存頁同一套） ----
 function finInvNewColFilter() {
-  return { noQuery: "", dateFrom: "", dateTo: "", numberQuery: "", categories: [], itemQuery: "", statuses: [], parties: [], accounts: [], noteQuery: "" };
+  return { noQuery: "", dateFrom: "", dateTo: "", numberQuery: "", categories: [], itemQuery: "", statuses: [], parties: [], noteQuery: "" };
 }
 const finInvColFilters = { purchase: finInvNewColFilter(), sales: finInvNewColFilter() };
 // 各欄要拿來篩選的值（清單型的值用 encodeURIComponent 當選項 id，名稱有 & 或引號也不會出錯）
 function finInvColValues(i, st, pays) {
   const list = pays[i.id] || [];
-  const accounts = [...new Set(list.map(p => finAccountLabel(p.accountId)))];
   return {
     no: list.length ? list.map(p => p.no).join(" ") : (i.expenseNo || ""),
     category: i.category || "（未填）",
     item: (i.items || []).map(it => it.name).join(" "),
     status: st[i.id].status,
     party: finPartyName(i),
-    account: accounts.length ? accounts.join("、") : (i.payMethod === FIN_PAY_CASH ? "現金" : "（未付款／未連結）"),
   };
 }
 function finInvColActive(cf) {
-  return !!(cf.noQuery || cf.dateFrom || cf.dateTo || cf.numberQuery || cf.itemQuery || cf.noteQuery || cf.categories.length || cf.statuses.length || cf.parties.length || cf.accounts.length);
+  return !!(cf.noQuery || cf.dateFrom || cf.dateTo || cf.numberQuery || cf.itemQuery || cf.noteQuery || cf.categories.length || cf.statuses.length || cf.parties.length);
 }
 function finFilteredInvoices(st, skipColumnFilters) {
   const f = finInvFilter;
@@ -348,7 +351,7 @@ function finFilteredInvoices(st, skipColumnFilters) {
     const v = finInvColValues(i, st, pays);
     return has(v.no, cf.noQuery) && has(i.number, cf.numberQuery) && has(v.item, cf.itemQuery) && has(i.note, cf.noteQuery)
       && (!cf.dateFrom || i.date >= cf.dateFrom) && (!cf.dateTo || i.date <= cf.dateTo)
-      && inList(v.category, cf.categories) && inList(v.status, cf.statuses) && inList(v.party, cf.parties) && inList(v.account, cf.accounts);
+      && inList(v.category, cf.categories) && inList(v.status, cf.statuses) && inList(v.party, cf.parties);
   });
 }
 
@@ -377,12 +380,6 @@ function finInvNoCell(list, inv) {
     return list.map(p => `<button type="button" data-entry="${finEsc(p.entryId)}" class="inv-pay-link block text-left text-xs font-mono text-blue-600 hover:underline whitespace-nowrap" title="開啟這筆流水的核對">${finEsc(p.no) || "無編號"}</button>`).join("");
   }
   return inv.expenseNo ? `<span class="text-xs font-mono text-slate-500 whitespace-nowrap" title="手動填的支出單號，還沒連結流水">${finEsc(inv.expenseNo)}</span>` : FIN_NONE_CELL;
-}
-// 帳號欄：已連結流水就列出付款的銀行帳戶；現金付款顯示「現金」
-function finInvAccountCell(list, inv) {
-  const accounts = [...new Set((list || []).map(p => finAccountLabel(p.accountId)))];
-  if (accounts.length) return accounts.map(a => `<div class="text-xs whitespace-nowrap">${finEsc(a)}</div>`).join("");
-  return inv.payMethod === FIN_PAY_CASH ? `<span class="text-xs text-slate-500">現金</span>` : FIN_NONE_CELL;
 }
 function finInvDetailHtml(inv, pays) {
   const items = inv.items || [];
@@ -680,7 +677,6 @@ function finRenderInvoices() {
           <th class="${stickyTh} text-right">未稅</th><th class="${stickyTh} text-right">稅額</th><th class="${stickyTh} text-right">含稅總額</th><th class="${stickyTh} text-right">已核對</th>
           ${colTh("statuses", "狀態", "list", { options: listOptions(v => v.status), selected: colF.statuses })}
           ${colTh("parties", isSales ? "客戶" : "廠商", "list", { options: listOptions(v => v.party), selected: colF.parties })}
-          ${colTh("accounts", isSales ? "收款帳號" : "付款帳號", "list", { options: listOptions(v => v.account), selected: colF.accounts })}
           ${colTh("noteQuery", "備註", "text", { value: colF.noteQuery })}
           <th class="${stickyTh} right-0 z-30 border-l"></th>
         </tr>
@@ -700,13 +696,12 @@ function finRenderInvoices() {
             <td class="px-3 py-2 text-right whitespace-nowrap">${finMoney(st[i.id].paid)}</td>
             <td class="px-3 py-2">${finStatusBadge(st[i.id].status)}</td>
             <td class="px-3 py-2">${finEsc(finPartyName(i))}</td>
-            <td class="px-3 py-2">${finInvAccountCell(pays[i.id], i)}</td>
             <td class="px-3 py-2 text-slate-500">${finEsc(i.note) || "-"}</td>
             <td class="px-3 py-2 text-right whitespace-nowrap sticky right-0 bg-white border-l"><button type="button" class="inv-toggle text-xs text-blue-600 hover:underline mr-2" aria-expanded="${open}"><span class="inv-chevron">${open ? "▾" : "▸"}</span> 明細${(i.items || []).length ? `（${i.items.length}）` : ""}</button><button data-id="${finEsc(i.id)}" class="inv-edit-btn text-slate-600 hover:underline text-xs mr-2">編輯</button><button data-id="${finEsc(i.id)}" class="inv-del-btn text-rose-500 hover:underline text-xs">刪除</button></td>
           </tr>
           <tr class="${open ? "" : "hidden"} bg-slate-50">
-            <td colspan="15" class="px-4 py-3">${finInvDetailHtml(i, pays[i.id])}</td>
-          </tr>`; }).join("") || `<tr><td colspan="15" class="px-4 py-8 text-center text-slate-400">${isSales ? "尚無銷項發票" : "尚無發票"}</td></tr>`}
+            <td colspan="14" class="px-4 py-3">${finInvDetailHtml(i, pays[i.id])}</td>
+          </tr>`; }).join("") || `<tr><td colspan="14" class="px-4 py-8 text-center text-slate-400">${isSales ? "尚無銷項發票" : "尚無發票"}</td></tr>`}
       </tbody>
     </table>
   </div>`;
