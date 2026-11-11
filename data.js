@@ -135,25 +135,35 @@ function assignAccountCodes(f) {
 }
 
 // 流水編號：代碼 + 兩位數月份 + 當月流水號，例如 T1 + 09 + 01 = T10901。
-// 流水號依「帳戶＋年月」各自累計（超過 99 筆時會變成三位數）；已編好的號碼不會因為刪除其他筆而變動。
+// 流水號依「帳戶代碼＋年月」各自累計（超過 99 筆時會變成三位數）。
+// 編號一旦編上就固定不變：改帳戶、改日期、改帳戶代碼、刪除其他筆都不會重編；
+// 刪掉的號碼也不會再發給新的流水（noCounters 記住每個代碼＋年月發到第幾號）。
 function assignFinanceNumbers(f) {
   assignAccountCodes(f);
   autoJudgeImported(f);
   const codes = Object.fromEntries(f.accounts.filter(a => a.code).map(a => [a.id, a.code]));
   const pending = f.ledger.filter(e => !e.no && codes[e.accountId] && e.date);
-  if (!pending.length) return syncInvoicePayments(f);
-  const last = {};
-  const key = e => `${e.accountId}|${e.date.slice(0, 7)}`;
+  // 每次存檔都先記下目前發到第幾號，之後刪掉最後一筆也不會被新流水拿去用
+  const counters = f.noCounters = f.noCounters || {};
+  const key = (code, date) => `${code}|${date.slice(0, 7)}`;
+  const used = new Set();
   f.ledger.forEach(e => {
+    if (!e.no) return;
+    used.add(e.no);
     const code = codes[e.accountId];
-    if (!e.no || !code || !e.date) return;
+    if (!code || !e.date || !e.no.startsWith(code + e.date.slice(5, 7))) return;   // 換過帳戶或月份的舊編號不算進累計
     const seq = Number(e.no.slice(code.length + 2)) || 0;
-    last[key(e)] = Math.max(last[key(e)] || 0, seq);
+    const k = key(code, e.date);
+    counters[k] = Math.max(counters[k] || 0, seq);
   });
+  if (!pending.length) return syncInvoicePayments(f);
   pending.sort((a, b) => a.date.localeCompare(b.date) || (a.seq || 0) - (b.seq || 0)).forEach(e => {
-    const seq = (last[key(e)] || 0) + 1;
-    last[key(e)] = seq;
-    e.no = codes[e.accountId] + e.date.slice(5, 7) + String(seq).padStart(2, "0");
+    const code = codes[e.accountId], k = key(code, e.date);
+    let seq = counters[k] || 0, no;
+    do { seq++; no = code + e.date.slice(5, 7) + String(seq).padStart(2, "0"); } while (used.has(no));
+    counters[k] = seq;
+    used.add(no);
+    e.no = no;
   });
   syncInvoicePayments(f);
 }

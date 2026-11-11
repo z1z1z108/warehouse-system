@@ -368,12 +368,7 @@ function finBindAccounts() {
     if (edit || bankCode) data.bankCode = bankCode;
     if (edit || String(feeRaw).trim() !== "") data.crossBankFee = crossBankFee;
     if (edit) {
-      // 改代碼時，已編好的流水只換開頭，月份和流水號不變
-      if (edit.code !== code) {
-        db.finance.ledger.filter(e => e.accountId === edit.id && e.no).forEach(e => {
-          if (code) e.no = code + e.no.slice((edit.code || "").length); else delete e.no;
-        });
-      }
+      // 已編好的流水編號固定不變；新代碼只用在之後新增的流水
       Object.assign(edit, data);
     } else db.finance.accounts.push({ id: finId("acc"), ...data });
     finAccountEditId = "";
@@ -887,8 +882,7 @@ function finBindEntryEdit() {
     if (amount < finEntryAllocated(e)) return fail("金額小於已核對分配的總額，請先到「核對」調整分配");
     if (type === "income" && (e.splits || []).length) return fail("這筆流水已經拆分，要改成收入請先清除拆分明細");
     if (amount < finEntryAllocated(e) + finEntrySplitTotal(e)) return fail("金額小於已核對加已拆分的總額，請先調整核對或拆分");
-    // 換帳戶或換月份，舊編號就對不上了；清掉後存檔時會重新編
-    if ($("ee-account").value !== e.accountId || finMonthOf(date) !== finMonthOf(e.date)) delete e.no;
+    // 流水編號一旦編上就固定，換帳戶或換月份也不重編
     const categoryChanged = (e.category || "") !== $("ee-category").value.trim();
     Object.assign(e, { date, accountId: $("ee-account").value, type, category: $("ee-category").value.trim(), amount, fee, counterparty: $("ee-party").value.trim(), content: $("ee-content").value.trim(), note: $("ee-note").value.trim() });
     saveDB(db);
