@@ -2,7 +2,7 @@
 // 不用瀏覽器原生的 confirm／prompt／alert：有些瀏覽器環境（例如內嵌瀏覽器）會直接擋掉，
 // 使用者按了按鈕卻什麼都沒發生。對話框掛在 body 上，不受 render() 重畫影響。
 
-function openAppDialog({ message, input, defaultValue = "", okLabel = "確定", cancelLabel = "取消", danger = false, onOk }) {
+function openAppDialog({ message, input, defaultValue = "", okLabel = "確定", cancelLabel = "取消", danger = false, onOk, choices }) {
   const previousFocus = document.activeElement;
   const overlay = document.createElement("div");
   overlay.className = "app-dialog fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40";
@@ -44,12 +44,21 @@ function openAppDialog({ message, input, defaultValue = "", okLabel = "確定", 
     cancelBtn.onclick = cancel;
     actions.appendChild(cancelBtn);
   }
-  const okBtn = document.createElement("button");
-  okBtn.type = "button";
-  okBtn.className = `rounded-lg px-4 py-2 text-sm font-medium text-white ${danger ? "bg-rose-600 hover:bg-rose-700" : "bg-slate-800 hover:bg-slate-700"}`;
-  okBtn.textContent = okLabel;
-  okBtn.onclick = ok;
-  actions.appendChild(okBtn);
+  // choices：多個選項時，每個選項一顆按鈕，第一個是主要按鈕
+  const optionList = choices && choices.length ? choices : [{ label: okLabel, onClick: () => { if (onOk) onOk(field ? field.value : undefined); } }];
+  let okBtn = null;
+  optionList.forEach((c, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = i === 0
+      ? `rounded-lg px-4 py-2 text-sm font-medium text-white ${danger ? "bg-rose-600 hover:bg-rose-700" : "bg-slate-800 hover:bg-slate-700"}`
+      : "border rounded-lg px-4 py-2 text-sm hover:bg-slate-100";
+    b.textContent = c.label;
+    b.onclick = choices && choices.length ? () => { close(); c.onClick(); } : ok;
+    actions.appendChild(b);
+    if (i === 0) okBtn = b;
+  });
+  actions.classList.add("flex-wrap");
   box.appendChild(actions);
   overlay.appendChild(box);
 
@@ -74,6 +83,10 @@ function openAppDialog({ message, input, defaultValue = "", okLabel = "確定", 
 // 確認：按確定才執行 onOk。按 Enter 會按到確定鈕，所以刪除類動作請傳 danger: true 讓按鈕顯示紅色
 function appConfirm(message, onOk, options = {}) {
   openAppDialog({ message, onOk, ...options });
+}
+// 多選一：choices = [{ label, onClick }]，按取消（cancelLabel）什麼都不做
+function appChoice(message, choices, cancelLabel = "取消") {
+  openAppDialog({ message, choices, cancelLabel });
 }
 // 輸入：按確定才會呼叫 onOk(輸入內容)，取消則不呼叫
 function appPrompt(message, defaultValue, onOk) {

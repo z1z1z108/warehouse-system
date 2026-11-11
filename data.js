@@ -19,10 +19,20 @@ const DEFAULT_DB = {
   movements: [],
   // 財務會計（僅震浤管理員可用）：發票、多帳戶流水帳、銀行帳戶、貸款，與庫存各自獨立
   finance: { invoices: [], ledger: [], accounts: [], loans: [], vendors: [] },
+  // 人事管理（僅震浤管理員可用）：員工、請假、例假日／補休、工安證照
+  hr: { employees: [], leaves: [], compDays: [], certs: [] },
 };
+
+// 補齊人事欄位（舊資料沒有 hr）。可重複執行。
+function ensureHrData(d) {
+  if (!d.hr || typeof d.hr !== "object") d.hr = {};
+  ["employees", "leaves", "compDays", "certs"].forEach(k => { if (!Array.isArray(d.hr[k])) d.hr[k] = []; });
+  return d;
+}
 
 // 補齊財務欄位，並把舊版（收款獨立存放、收支帳沒有帳戶）升級成「多帳戶流水帳」。可重複執行。
 function ensureFinanceData(d) {
+  ensureHrData(d);
   if (!d.finance || typeof d.finance !== "object") d.finance = {};
   const f = d.finance;
   ["invoices", "ledger", "accounts", "loans"].forEach(k => { if (!Array.isArray(f[k])) f[k] = []; });
@@ -148,25 +158,48 @@ function assignFinanceNumbers(f) {
   syncInvoicePayments(f);
 }
 
-// 發票的支出單號、付款日期、付款方式跟著連結的流水走。第一次連結時先記下原本的內容（prePay），
-// 全部取消連結時還原。付不足額（例如先付訂金）時，付款方式顯示「部分總額」。
+// 發票的支出單號、付款方式跟著連結的流水走（支出單號就是流水編號，以流水所在月份編碼）。
+// 第一次連結時先記下原本的內容（prePay），全部取消連結時還原。付不足額（例如先付訂金）時，付款方式顯示「部分總額」。
+// 發票日期和付款日期由使用者自己填，不會被流水改掉。
 function syncInvoicePayments(f) {
   const pays = {};
   f.ledger.forEach(e => (e.allocations || []).forEach(a => { (pays[a.invoiceId] = pays[a.invoiceId] || []).push({ no: e.no || "", date: e.date, amount: a.amount }); }));
+  syncLinkedVendorsAndCategories(f);
   f.invoices.forEach(inv => {
     const list = pays[inv.id];
     if (!list) {
       if (inv.prePay) { Object.assign(inv, inv.prePay); delete inv.prePay; }
       return;
     }
-    if (!inv.prePay) inv.prePay = { expenseNo: inv.expenseNo || "", payDate: inv.payDate || "", payMethod: inv.payMethod || "" };
+    if (!inv.prePay) inv.prePay = { expenseNo: inv.expenseNo || "", payMethod: inv.payMethod || "" };
     list.sort((a, b) => a.date.localeCompare(b.date));
+    // 舊版會把付款日期改成流水日期；還原成連結前填的（只做一次）
+    if ("payDate" in inv.prePay) {
+      if (inv.payDate === list[list.length - 1].date) inv.payDate = inv.prePay.payDate;
+      delete inv.prePay.payDate;
+    }
     inv.expenseNo = [...new Set(list.map(p => p.no).filter(Boolean))].join("、");
-    inv.payDate = list[list.length - 1].date;
     if (inv.kind !== "purchase") return;
     const paid = list.reduce((s, p) => s + p.amount, 0);
     const before = inv.prePay.payMethod;
     inv.payMethod = paid < inv.total ? "部分總額" : (!before || before === "未付" || before === "部分總額" ? "轉帳" : before);
+  });
+}
+
+// 已對到帳的支出流水和進項發票：廠商（流水的收款方 ↔ 發票的開立公司）和類別，一方空白就帶入另一方。
+// 兩邊都有但不同時不在這裡改：廠商維持原樣，類別由畫面跳出提示讓使用者選。
+function syncLinkedVendorsAndCategories(f) {
+  const invById = Object.fromEntries(f.invoices.map(i => [i.id, i]));
+  f.ledger.forEach(e => {
+    if (e.type !== "expense" || e.category === FIN_TRANSFER_LABEL || e.transferGroup) return;
+    const invs = (e.allocations || []).map(a => invById[a.invoiceId]).filter(i => i && i.kind === "purchase");
+    if (!invs.length) return;
+    const only = (key) => { const v = [...new Set(invs.map(i => i[key]).filter(Boolean))]; return v.length === 1 ? v[0] : ""; };
+    // 一筆流水付多張不同廠商的發票（例如員工代墊一次報帳）時，流水的收款方不一定是廠商，所以只在單一廠商時帶入
+    if (!e.counterparty && only("vendor")) e.counterparty = only("vendor");
+    if (invs.length === 1 && !invs[0].vendor && e.counterparty) invs[0].vendor = e.counterparty;
+    if (!e.category && only("category")) e.category = only("category");
+    if (e.category) invs.forEach(i => { if (!i.category) i.category = e.category; });
   });
 }
 

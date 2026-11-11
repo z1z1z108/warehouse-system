@@ -55,6 +55,49 @@ function finJudgeManual({ accountId, type, party, content, category }) {
   if (byNumber.kind === "same" || (account.name && party.includes(account.name))) return { kind: "same", fee: 0 };
   return { kind: "cross", fee: Number(account.crossBankFee) || 0 };
 }
+// ---- 流水與發票的類別同步 ----
+// 已連結的流水和進項發票：一方沒有類別就帶入另一方的；兩邊都有但不同，跳出提示讓使用者選。
+// source："link" 剛連結（問用哪一邊）、"ledger" 改了流水（問要不要更新發票）、"invoice" 改了發票（問要不要更新流水）
+function finSyncCategories(entries, source, onlyInvoiceId) {
+  const invById = Object.fromEntries(db.finance.invoices.map(i => [i.id, i]));
+  const conflicts = [];
+  let changed = false;
+  entries.forEach(e => {
+    if (!e || e.type !== "expense" || finIsTransfer(e)) return;
+    const invs = (e.allocations || []).map(a => invById[a.invoiceId]).filter(i => i && i.kind === "purchase" && (!onlyInvoiceId || i.id === onlyInvoiceId));
+    if (!invs.length) return;
+    if (e.category) {
+      invs.forEach(i => { if (!i.category) { i.category = e.category; changed = true; } });
+    } else {
+      const cats = [...new Set(invs.map(i => i.category).filter(Boolean))];
+      if (cats.length === 1) { e.category = cats[0]; changed = true; }
+    }
+    invs.forEach(i => { if (e.category && i.category && i.category !== e.category) conflicts.push({ e, inv: i }); });
+  });
+  if (changed) saveDB(db);
+  if (!conflicts.length) {
+    if (changed) finRenderKeepScroll();
+    return;
+  }
+  const lines = conflicts.slice(0, 8).map(({ e, inv }) => `${e.no || "流水"}「${e.category}」 ↔ 發票 ${inv.number || "（未填號碼）"}「${inv.category}」`);
+  if (conflicts.length > 8) lines.push(`…等 ${conflicts.length} 筆`);
+  const done = () => { saveDB(db); finRenderKeepScroll(); };
+  const useLedger = { label: "用流水的類別", onClick: () => { conflicts.forEach(({ e, inv }) => { inv.category = e.category; }); done(); } };
+  // 同一筆流水連到多張不同類別的發票時，沒辦法全部用發票的類別
+  const invCatsPerEntry = new Map();
+  conflicts.forEach(({ e, inv }) => { (invCatsPerEntry.get(e) || invCatsPerEntry.set(e, new Set()).get(e)).add(inv.category); });
+  const canUseInvoice = [...invCatsPerEntry.values()].every(s => s.size === 1);
+  const useInvoice = { label: "用發票的類別", onClick: () => { conflicts.forEach(({ e, inv }) => { e.category = inv.category; }); done(); } };
+  if (changed) finRenderKeepScroll();
+  if (source === "ledger") {
+    appChoice(`流水和連結的發票類別不同：\n${lines.join("\n")}\n\n要把發票也改成流水的類別嗎？`, [{ ...useLedger, label: "一起更新發票" }], "不更新");
+  } else if (source === "invoice") {
+    appChoice(`發票和連結的流水類別不同：\n${lines.join("\n")}\n\n要把流水也改成發票的類別嗎？`, canUseInvoice ? [{ ...useInvoice, label: "一起更新流水" }] : [useLedger], "不更新");
+  } else {
+    appChoice(`流水和發票的類別不同，要以哪一邊為準？\n${lines.join("\n")}`, canUseInvoice ? [useLedger, useInvoice] : [useLedger], "先不改");
+  }
+}
+
 // 在流水帳 KEY 發票號碼連結發票：金額相符直接連結；不符先請使用者確認（可能是先付訂金）。
 // 連結後，發票的支出單號、付款日期、付款方式由 data.js 的 syncInvoicePayments 更新。
 function finLinkInvoiceByNumber(e, raw) {
@@ -90,6 +133,7 @@ function finLinkInvoiceByNumber(e, raw) {
     if (kind === "sales") e.clientId = inv.clientId;
     saveDB(db);
     finRenderKeepScroll();
+    finSyncCategories([e], "link");
   };
   const no = e.no || "這筆流水";
   if (available === st.outstanding) return apply();
@@ -187,6 +231,7 @@ function finAutoMatch() {
   db.finance.invoices.forEach(i => { remaining[i.id] = st[i.id].outstanding; });
   const open = db.finance.ledger.filter(e => finReconStatus(e, ctx).code === "open").sort((a, b) => a.date.localeCompare(b.date));
   let matched = 0, ambiguous = 0, none = 0;
+  const matchedEntries = [];
   open.forEach(e => {
     const kind = e.type === "income" ? "sales" : "purchase";
     let cands = db.finance.invoices.filter(i => i.kind === kind && remaining[i.id] === e.amount);
@@ -202,10 +247,11 @@ function finAutoMatch() {
       if (kind === "sales") e.clientId = inv.clientId;
       remaining[inv.id] = 0;
       matched++;
+      matchedEntries.push(e);
     } else if (cands.length > 1) ambiguous++;
     else none++;
   });
-  return { matched, ambiguous, none };
+  return { matched, ambiguous, none, matchedEntries };
 }
 
 // ============================================================
@@ -532,7 +578,7 @@ function finRenderLedger() {
   <div class="bg-white rounded-xl shadow-sm overflow-x-auto">
     <table class="w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
-        <tr><th class="px-3 py-2"><input type="checkbox" id="led-sel-all" ${allSelected ? "checked" : ""}/></th><th class="px-3 py-2 whitespace-nowrap">匯款編號</th><th class="px-3 py-2 whitespace-nowrap">匯款日期</th><th class="px-3 py-2">項目類別</th><th class="px-3 py-2" style="min-width: 7rem">收款方</th><th class="px-3 py-2" style="min-width: 11rem">內容／發票號碼</th><th class="px-3 py-2 text-right whitespace-nowrap">銷項（支出）</th><th class="px-3 py-2 text-right whitespace-nowrap">進項（收入）</th><th class="px-3 py-2 text-right whitespace-nowrap">互匯未實際扣</th><th class="px-3 py-2 text-right whitespace-nowrap">手續費</th><th class="px-3 py-2" style="min-width: 5rem">備註</th><th class="px-3 py-2 whitespace-nowrap">核對</th><th class="px-3 py-2 sticky right-0 bg-slate-100"></th></tr>
+        <tr><th class="px-3 py-2"><input type="checkbox" id="led-sel-all" ${allSelected ? "checked" : ""}/></th><th class="px-3 py-2 whitespace-nowrap">匯款編號</th><th class="px-3 py-2 whitespace-nowrap">匯款日期</th><th class="px-3 py-2">項目類別</th><th class="px-3 py-2" style="min-width: 9rem">內容</th><th class="px-3 py-2" style="min-width: 10rem">發票號碼</th><th class="px-3 py-2 text-right whitespace-nowrap">銷項（支出）</th><th class="px-3 py-2 text-right whitespace-nowrap">進項（收入）</th><th class="px-3 py-2 text-right whitespace-nowrap">互匯未實際扣</th><th class="px-3 py-2 text-right whitespace-nowrap">手續費</th><th class="px-3 py-2" style="min-width: 5rem">備註</th><th class="px-3 py-2" style="min-width: 7rem">收款方</th><th class="px-3 py-2 whitespace-nowrap">核對</th><th class="px-3 py-2 sticky right-0 bg-slate-100"></th></tr>
       </thead>
       <tbody>
         ${pageRows.map(e => { const rs = finReconStatus(e, ctx); const nums = (e.allocations || []).map(a => invById[a.invoiceId]?.number).filter(Boolean); const transfer = finIsTransfer(e); const splits = e.splits || []; const splitOpen = finLedgerExpanded.has(e.id); return `
@@ -541,12 +587,13 @@ function finRenderLedger() {
             <td class="px-3 py-2 whitespace-nowrap"><div class="font-mono text-xs">${finEsc(e.no) || `<span class="text-slate-300">-</span>`}</div>${f.account ? "" : `<div class="text-[11px] text-slate-400">${finEsc(finAccountName(e.accountId))}</div>`}</td>
             <td class="px-3 py-2 text-xs text-slate-500 whitespace-nowrap" title="${finEsc(e.date)}">${finEsc(finShortDate(e.date))}</td>
             <td class="px-3 py-2">${transfer ? `<span class="text-slate-500">${finEsc(e.category)}</span>` : `<select class="led-cat-input border rounded-lg px-2 py-1 text-sm w-40 ${e.category ? "" : "border-amber-300"}" data-id="${finEsc(e.id)}" aria-label="類別">${finCategoryOptions(e.type, e.category)}</select>`}${splits.length ? `<button type="button" data-id="${finEsc(e.id)}" class="led-split-toggle block text-xs text-blue-600 mt-1" aria-expanded="${splitOpen}"><span class="led-split-chevron">${splitOpen ? "▾" : "▸"}</span> 拆分 ${splits.length} 筆</button>` : ""}</td>
-            <td class="px-3 py-2">${finEsc(e.counterparty) || ""}</td>
             <td class="px-3 py-2">
               ${e.content ? `<div>${finEsc(e.content)}</div>` : ""}
-              ${nums.length ? `<button type="button" data-id="${finEsc(e.id)}" class="led-recon-btn block text-left text-xs font-mono text-blue-600 hover:underline" title="開啟核對">${finEsc(nums.join("、"))}</button>` : ""}
-              ${!transfer && e.amount - finEntryAllocated(e) - finEntrySplitTotal(e) > 0 ? `<input class="led-inv-input border rounded px-2 py-1 text-xs w-full mt-1 font-mono" list="${e.type === "income" ? "led-inv-sales" : "led-inv-purchase"}" data-id="${finEsc(e.id)}" autocomplete="off" aria-label="輸入發票號碼" placeholder="KEY 發票號碼後按 Enter"/>` : ""}
               ${e.ref ? `<div class="text-xs text-slate-400">${finEsc(e.ref)}</div>` : ""}
+            </td>
+            <td class="px-3 py-2">
+              ${nums.length ? `<button type="button" data-id="${finEsc(e.id)}" class="led-recon-btn block text-left text-xs font-mono text-blue-600 hover:underline" title="開啟核對">${finEsc(nums.join("、"))}</button>` : ""}
+              ${!transfer && e.amount - finEntryAllocated(e) - finEntrySplitTotal(e) > 0 ? `<input class="led-inv-input border rounded px-2 py-1 text-xs w-full ${nums.length ? "mt-1" : ""} font-mono" list="${e.type === "income" ? "led-inv-sales" : "led-inv-purchase"}" data-id="${finEsc(e.id)}" autocomplete="off" aria-label="輸入發票號碼" placeholder="KEY 發票號碼後按 Enter"/>` : ""}
             </td>
             ${(() => {
               const balanceTitle = e.balance != null && e.balance !== "" ? `title="對帳單餘額 ${finMoney(e.balance)}"` : "";
@@ -557,6 +604,7 @@ function finRenderLedger() {
             })()}
             <td class="px-3 py-2 text-right text-slate-600">${e.fee ? finMoney(e.fee) : ""}</td>
             <td class="px-3 py-2 text-slate-500">${finEsc(e.note) || ""}</td>
+            <td class="px-3 py-2">${finEsc(e.counterparty) || ""}</td>
             <td class="px-3 py-2">${finReconBadge(rs)}</td>
             <td class="px-3 py-2 text-right whitespace-nowrap sticky right-0 bg-white border-l">
               ${e.autoTransfer ? `<button data-id="${finEsc(e.id)}" class="led-untransfer-btn text-blue-600 hover:underline text-xs mr-2" title="這筆不是內部轉帳時，改回一般流水">改為一般流水</button>` : ""}
@@ -564,7 +612,7 @@ function finRenderLedger() {
               <button data-id="${finEsc(e.id)}" class="led-del-btn text-rose-500 hover:underline text-xs">刪除</button>
             </td>
           </tr>
-          ${splits.length ? `<tr class="${splitOpen ? "" : "hidden"} bg-slate-50"><td colspan="13" class="px-3 py-2">${finSplitDetailHtml(e)}</td></tr>` : ""}`; }).join("") || `<tr><td colspan="13" class="px-4 py-8 text-center text-slate-400">沒有符合條件的流水</td></tr>`}
+          ${splits.length ? `<tr class="${splitOpen ? "" : "hidden"} bg-slate-50"><td colspan="14" class="px-3 py-2">${finSplitDetailHtml(e)}</td></tr>` : ""}`; }).join("") || `<tr><td colspan="14" class="px-4 py-8 text-center text-slate-400">沒有符合條件的流水</td></tr>`}
       </tbody>
       ${rows.length ? `
       <tfoot class="bg-slate-50 border-t-2 font-semibold">
@@ -574,7 +622,7 @@ function finRenderLedger() {
           <td class="px-3 py-2 text-right whitespace-nowrap text-emerald-600">${finMoney(income)}</td>
           <td class="px-3 py-2 text-right whitespace-nowrap text-slate-600">${hasTransfer ? signed(transferNet) || "0" : ""}</td>
           <td class="px-3 py-2 text-right whitespace-nowrap text-slate-600">${finMoney(feeTotal)}</td>
-          <td colspan="3"></td>
+          <td colspan="4"></td>
         </tr>
       </tfoot>` : ""}
     </table>
@@ -667,6 +715,7 @@ function finBindLedger() {
     saveDB(db);
     alert(`自動配對完成：\n成功配對 ${r.matched} 筆\n有多張候選、需人工核對 ${r.ambiguous} 筆\n找不到金額相符的發票 ${r.none} 筆`);
     render();
+    finSyncCategories(r.matchedEntries, "link");
   };
 
   // ---- 篩選 ----
@@ -705,6 +754,7 @@ function finBindLedger() {
     es.forEach(e => { e.category = cat; });
     saveDB(db); finLedgerSel.clear(); finRenderKeepScroll();
     if (es.length < rows.length) alert(`已套用 ${es.length} 筆。另有 ${rows.length - es.length} 筆的收支類型和「${cat}」不符，沒有變更。`);
+    finSyncCategories(es, "ledger");
   };
   $("led-bulk-nomatch-btn").onclick = () => {
     selected().filter(e => !finIsTransfer(e)).forEach(e => { e.noMatch = true; e.allocations = []; delete e.loanId; });
@@ -734,6 +784,7 @@ function finBindLedger() {
       e.category = inp.value.trim();
       saveDB(db);
       finRenderKeepScroll();
+      finSyncCategories([e], "ledger");
     };
   });
   document.querySelectorAll(".led-recon-btn").forEach(b => { b.onclick = () => finOpenReconcile(b.dataset.id); });
@@ -836,9 +887,11 @@ function finBindEntryEdit() {
     if (amount < finEntryAllocated(e) + finEntrySplitTotal(e)) return fail("金額小於已核對加已拆分的總額，請先調整核對或拆分");
     // 換帳戶或換月份，舊編號就對不上了；清掉後存檔時會重新編
     if ($("ee-account").value !== e.accountId || finMonthOf(date) !== finMonthOf(e.date)) delete e.no;
+    const categoryChanged = (e.category || "") !== $("ee-category").value.trim();
     Object.assign(e, { date, accountId: $("ee-account").value, type, category: $("ee-category").value.trim(), amount, fee, counterparty: $("ee-party").value.trim(), content: $("ee-content").value.trim(), note: $("ee-note").value.trim() });
     saveDB(db);
     goBack();
+    if (categoryChanged) finSyncCategories([e], "ledger");
   };
 }
 
@@ -1185,6 +1238,7 @@ function finBindReconcile() {
         saveDB(db);
         finReconDraft = null;
         goBack();
+        finSyncCategories([e], "link");
       };
       if (shortOnes.length) {
         const lines = shortOnes.map(({ a, c }) => `發票 ${c.inv.number || "（未填號碼）"}：本次 ${finMoney(a.amount)}，尚未付 ${finMoney(c.remaining)}，差額 ${finMoney(c.remaining - a.amount)}`).join("\n");
