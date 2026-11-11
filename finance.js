@@ -392,9 +392,8 @@ function finInvDetailHtml(inv, pays) {
       const paid = pays.reduce((s, p) => s + p.amount, 0);
       return paid < inv.total ? `<p class="text-xs text-amber-700 text-right mt-1">已付 ${finMoney(paid)}，尚欠 ${finMoney(inv.total - paid)}</p>` : "";
     })()}` : "";
-  // 已經連到流水的發票，就不再顯示登錄時選的「未付」，以下方付款紀錄為準
-  const shownMethod = inv.payMethod === FIN_PAY_UNPAID && (pays || []).length ? "" : inv.payMethod;
-  const meta = [["憑證類別", inv.voucherType], ["類別", inv.category], ["專案/工程", inv.project], ["收款方", inv.payee], ["付款方式", shownMethod], ["付款日期", inv.payDate], ["支出單號", inv.expenseNo]].filter(([, v]) => v);
+  // 付款方式和編輯表單裡選的一致（連結流水時系統自動帶的，或使用者手動改的）
+  const meta = [["憑證類別", inv.voucherType], ["類別", inv.category], ["專案/工程", inv.project], ["收款方", inv.payee], ["付款方式", inv.payMethod], ["付款日期", inv.payDate], ["支出單號", inv.expenseNo]].filter(([, v]) => v);
   const metaHtml = meta.length ? `<div class="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-600 mb-2">${meta.map(([k, v]) => `<span><span class="text-slate-400">${k}</span> ${finEsc(v)}</span>`).join("")}</div>` : "";
   const summary = `
     <div class="flex justify-end gap-6 text-xs text-slate-600 mt-2">
@@ -807,7 +806,6 @@ function finBindInvoices() {
         const hint = "請先到流水帳取消核對";
         if (kind !== editing.kind) return fail(`這張發票已連結流水，不能改類型。${hint}`);
         if (amount + tax < linked) return fail(`這張發票已連結流水 ${finMoney(linked)} 元，含稅總額不能比它少。${hint}`);
-        if (d.payMethod === FIN_PAY_CASH || d.payMethod === FIN_PAY_NONE) return fail(`這張發票已連結流水，不能改成${d.payMethod}。${hint}`);
         if (kind === "sales" && clientId !== editing.clientId) return fail(`這張發票已連結流水，不能改客戶。${hint}`);
       }
     }
@@ -830,6 +828,8 @@ function finBindInvoices() {
       if (vendor) finRememberVendor(vendor);
       if (editing) {
         const categoryChanged = (editing.category || "") !== fields.category;
+        // 已連結流水的發票，使用者手動改了付款方式就以使用者選的為準，連結流水時不再自動改成轉帳／部分總額
+        if (isPurchase && fields.payMethod !== (editing.payMethod || "") && (finInvoicePayments()[editing.id] || []).length) fields.payMethodManual = true;
         Object.assign(editing, fields);
         finInvEndEdit();
         finSave();

@@ -178,7 +178,9 @@ function syncInvoicePayments(f) {
   f.invoices.forEach(inv => {
     const list = pays[inv.id];
     if (!list) {
-      if (inv.prePay) { Object.assign(inv, inv.prePay); delete inv.prePay; }
+      // 全部取消連結：還原連結前的內容；但使用者手動改過的付款方式保留
+      if (inv.prePay) { Object.assign(inv, inv.prePay, inv.payMethodManual ? { payMethod: inv.payMethod } : {}); delete inv.prePay; }
+      delete inv.payMethodManual;
       return;
     }
     if (!inv.prePay) inv.prePay = { expenseNo: inv.expenseNo || "", payMethod: inv.payMethod || "" };
@@ -189,7 +191,7 @@ function syncInvoicePayments(f) {
       delete inv.prePay.payDate;
     }
     inv.expenseNo = [...new Set(list.map(p => p.no).filter(Boolean))].join("、");
-    if (inv.kind !== "purchase") return;
+    if (inv.kind !== "purchase" || inv.payMethodManual) return;   // 使用者手動改過付款方式，就不自動改
     const paid = list.reduce((s, p) => s + p.amount, 0);
     const before = inv.prePay.payMethod;
     inv.payMethod = paid < inv.total ? "部分總額" : (!before || before === "未付" || before === "部分總額" ? "轉帳" : before);

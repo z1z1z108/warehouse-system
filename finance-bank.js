@@ -1127,7 +1127,7 @@ function finReconCandidates(e, d) {
   const isIncome = e.type === "income";
   const st = finSettlement();
   const own = Object.fromEntries((e.allocations || []).map(a => [a.invoiceId, a.amount]));
-  let cands = db.finance.invoices.filter(i => i.kind === (isIncome ? "sales" : "purchase") && i.payMethod !== FIN_PAY_NONE && i.payMethod !== FIN_PAY_CASH).map(inv => {
+  let cands = db.finance.invoices.filter(i => i.kind === (isIncome ? "sales" : "purchase") && ((i.payMethod !== FIN_PAY_NONE && i.payMethod !== FIN_PAY_CASH) || own[i.id] !== undefined)).map(inv => {
     // 用「已連結流水」的金額算，手動標成轉帳（已付）但還沒對帳的發票仍可連結
     const otherPaid = st[inv.id].ledgerPaid - (own[inv.id] || 0);
     return { inv, otherPaid, remaining: Math.max(0, inv.total - otherPaid) };
