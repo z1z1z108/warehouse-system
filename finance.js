@@ -339,7 +339,8 @@ function finFilteredInvoices(st, skipColumnFilters) {
   let rows = db.finance.invoices.slice().sort((a, b) => (b.date + b.number).localeCompare(a.date + a.number));
   if (f.kind) rows = rows.filter(i => i.kind === f.kind);
   if (f.month) rows = rows.filter(i => finMonthOf(i.date) === f.month);
-  if (f.status) rows = rows.filter(i => st[i.id]?.state === f.status);
+  // 付款狀態篩選和清單「狀態」欄用同一組文字（未付／部分付款／已付／不支出），選什麼就只列出狀態欄顯示那樣的發票
+  if (f.status) rows = rows.filter(i => st[i.id]?.status === f.status);
   const pays = finInvoicePayments();
   const q = f.q.trim().toLowerCase();
   if (q) rows = rows.filter(i => `${finInvoiceSearchText(i)} ${(pays[i.id] || []).map(p => p.no).join(" ")}`.toLowerCase().includes(q));
@@ -634,9 +635,7 @@ function finRenderInvoices() {
         <label class="text-xs text-slate-500">${isSales ? "收款狀態" : "付款狀態"}</label>
         <select id="inv-f-status" class="w-full border rounded-lg px-3 py-1.5 text-sm mt-1">
           <option value="">全部</option>
-          <option value="open" ${f.status === "open" ? "selected" : ""}>${isSales ? "未收" : "未付"}</option>
-          <option value="partial" ${f.status === "partial" ? "selected" : ""}>${isSales ? "部分收款" : "部分付款"}</option>
-          <option value="settled" ${f.status === "settled" ? "selected" : ""}>${isSales ? "已收" : "已付"}</option>
+          ${(isSales ? ["未收", "部分收款", "已收"] : ["未付", "部分付款", "已付", FIN_PAY_NONE]).map(s => `<option value="${s}" ${f.status === s ? "selected" : ""}>${s}</option>`).join("")}
         </select>
       </div>
       <div>
