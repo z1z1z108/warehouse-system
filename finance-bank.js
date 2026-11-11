@@ -122,12 +122,13 @@ function finLinkInvoiceByNumber(e, raw) {
   const label = `發票 ${inv.number}（${finPartyName(inv)}）`;
   if (inv.payMethod === FIN_PAY_NONE) return alert(`${label} 的付款方式是「不支出」，不需要連結流水。`);
   if ((e.allocations || []).some(a => a.invoiceId === inv.id)) return alert(`${label} 已經連結這筆流水了。`);
-  if (st.outstanding <= 0) return alert(`${label} 已經付清（${inv.expenseNo || inv.payMethod || "已付"}），請確認號碼是否正確。`);
+  if (inv.payMethod === FIN_PAY_CASH) return alert(`${label} 是現金付款，不需要連結銀行流水。`);
+  if (st.linkRemaining <= 0) return alert(`${label} 已經連結流水付清（${inv.expenseNo || "已付"}），請確認號碼是否正確。`);
   const available = e.amount - finEntryAllocated(e) - finEntrySplitTotal(e);
   if (available <= 0) return alert("這筆流水的金額已經分配完了。");
   if (kind === "sales" && (e.allocations || []).some(a => db.finance.invoices.find(i => i.id === a.invoiceId)?.clientId !== inv.clientId)) return alert("一筆入帳只能核對同一個客戶的發票。");
   const apply = () => {
-    e.allocations = [...(e.allocations || []), { invoiceId: inv.id, amount: Math.min(available, st.outstanding) }];
+    e.allocations = [...(e.allocations || []), { invoiceId: inv.id, amount: Math.min(available, st.linkRemaining) }];
     delete e.noMatch;
     delete e.loanId;
     if (kind === "sales") e.clientId = inv.clientId;
@@ -136,11 +137,12 @@ function finLinkInvoiceByNumber(e, raw) {
     finSyncCategories([e], "link");
   };
   const no = e.no || "這筆流水";
-  if (available === st.outstanding) return apply();
-  if (available < st.outstanding) {
-    return appConfirm(`金額有出入，請確認：\n${no} 可分配金額 ${finMoney(available)}\n${label} 尚未付 ${finMoney(st.outstanding)}\n差額 ${finMoney(st.outstanding - available)}\n\n如果是先付訂金，連結後付款方式會記為「${FIN_PAY_PARTIAL}」，尚欠的金額之後再連其他流水。`, apply, { okLabel: `記為${FIN_PAY_PARTIAL}` });
+  const left = st.linkRemaining;
+  if (available === left) return apply();
+  if (available < left) {
+    return appConfirm(`金額有出入，請確認：\n${no} 可分配金額 ${finMoney(available)}\n${label} 尚未對到流水 ${finMoney(left)}\n差額 ${finMoney(left - available)}\n\n如果是先付訂金，連結後付款方式會記為「${FIN_PAY_PARTIAL}」，尚欠的金額之後再連其他流水。`, apply, { okLabel: `記為${FIN_PAY_PARTIAL}` });
   }
-  appConfirm(`金額有出入，請確認：\n${no} 可分配金額 ${finMoney(available)}\n${label} 尚未付 ${finMoney(st.outstanding)}\n\n這張發票會算付清，多出的 ${finMoney(available - st.outstanding)} 元留在這筆流水，可以再連其他發票。`, apply, { okLabel: "連結" });
+  appConfirm(`金額有出入，請確認：\n${no} 可分配金額 ${finMoney(available)}\n${label} 尚未對到流水 ${finMoney(left)}\n\n這張發票會算付清，多出的 ${finMoney(available - left)} 元留在這筆流水，可以再連其他發票。`, apply, { okLabel: "連結" });
 }
 function finShortDate(iso) {
   const [, m, d] = String(iso || "").split("-").map(Number);
@@ -228,7 +230,7 @@ function finAutoMatch() {
   const ctx = finReconContext();
   const st = finSettlement();
   const remaining = {};
-  db.finance.invoices.forEach(i => { remaining[i.id] = st[i.id].outstanding; });
+  db.finance.invoices.forEach(i => { remaining[i.id] = st[i.id].linkRemaining; });
   const open = db.finance.ledger.filter(e => finReconStatus(e, ctx).code === "open").sort((a, b) => a.date.localeCompare(b.date));
   let matched = 0, ambiguous = 0, none = 0;
   const matchedEntries = [];
@@ -562,7 +564,7 @@ function finRenderLedger() {
   ${(() => {
     // KEY 發票號碼時的提示：只列還沒付清的發票
     const st = finSettlement();
-    const list = kind => db.finance.invoices.filter(i => i.kind === kind && i.number && st[i.id].outstanding > 0).map(i => `<option value="${finEsc(i.number)}">${finEsc(finPartyName(i))} 未付 ${finMoney(st[i.id].outstanding)}</option>`).join("");
+    const list = kind => db.finance.invoices.filter(i => i.kind === kind && i.number && st[i.id].linkRemaining > 0).map(i => `<option value="${finEsc(i.number)}">${finEsc(finPartyName(i))} 待對帳 ${finMoney(st[i.id].linkRemaining)}</option>`).join("");
     return `<datalist id="led-inv-purchase">${list("purchase")}</datalist><datalist id="led-inv-sales">${list("sales")}</datalist>`;
   })()}
   <div class="bg-slate-800 text-white rounded-xl px-4 py-2 mb-3 flex flex-wrap items-center gap-3 text-sm">
@@ -1034,8 +1036,9 @@ function finReconCandidates(e, d) {
   const isIncome = e.type === "income";
   const st = finSettlement();
   const own = Object.fromEntries((e.allocations || []).map(a => [a.invoiceId, a.amount]));
-  let cands = db.finance.invoices.filter(i => i.kind === (isIncome ? "sales" : "purchase") && i.payMethod !== FIN_PAY_NONE).map(inv => {
-    const otherPaid = st[inv.id].paid - (own[inv.id] || 0);
+  let cands = db.finance.invoices.filter(i => i.kind === (isIncome ? "sales" : "purchase") && i.payMethod !== FIN_PAY_NONE && i.payMethod !== FIN_PAY_CASH).map(inv => {
+    // 用「已連結流水」的金額算，手動標成轉帳（已付）但還沒對帳的發票仍可連結
+    const otherPaid = st[inv.id].ledgerPaid - (own[inv.id] || 0);
     return { inv, otherPaid, remaining: Math.max(0, inv.total - otherPaid) };
   });
   if (d.party) cands = cands.filter(c => isIncome ? c.inv.clientId === d.party : c.inv.vendor === d.party);
