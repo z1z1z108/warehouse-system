@@ -813,6 +813,16 @@ let colMenu = { id: null, search: "" };
 const COLUMN_FILTERS = { inv: () => inventoryFilter, mov: () => movementsFilter };
 
 // kind: "list"（核取清單，cfg.options/cfg.selected）、"text"（關鍵字，cfg.value）、"date"（日期區間，cfg.from/cfg.to）
+// 起迄日期剛好是某一整年或某一整月時，回傳那個年、月（給日期篩選的年／月下拉選單顯示目前選的）
+function dateRangeYearMonth(from, to) {
+  if (!from || !to || from.slice(0, 4) !== to.slice(0, 4)) return { year: "", month: "" };
+  const y = from.slice(0, 4);
+  if (from === `${y}-01-01` && to === `${y}-12-31`) return { year: y, month: "" };
+  const m = from.slice(5, 7);
+  if (from === `${y}-${m}-01` && to === monthLastDay(y, m)) return { year: y, month: m };
+  return { year: "", month: "" };
+}
+function monthLastDay(y, m) { return `${y}-${m}-${String(new Date(Number(y), Number(m), 0).getDate()).padStart(2, "0")}`; }
 function renderHeaderFilter(scope, key, label, kind, cfg) {
   const menuId = scope + ":" + key;
   const open = colMenu.id === menuId;
@@ -840,7 +850,21 @@ function renderHeaderFilter(scope, key, label, kind, cfg) {
         <input class="col-menu-text border rounded px-2 py-1 text-xs w-full" data-scope="${scope}" data-key="${key}" placeholder="輸入關鍵字" value="${cfg.value}"/>
         <button class="col-menu-text-clear text-xs text-blue-600 hover:underline mt-1.5" data-scope="${scope}" data-key="${key}">清除</button>`;
     } else {
+      // 快速選年、月：選了就把起迄日期設成那一年或那個月的第一天到最後一天
+      const ym = dateRangeYearMonth(cfg.from, cfg.to);
+      const thisYear = Number(todayISO().slice(0, 4));
+      const years = [...new Set([...(cfg.years || []), thisYear, ym.year].map(Number).filter(Boolean))].sort((a, b) => b - a);
       body = `
+        <div class="flex gap-1.5 mb-2">
+          <select class="col-menu-ym col-menu-year border rounded px-1.5 py-1 text-xs flex-1" data-scope="${scope}" data-from="${cfg.fromKey}" data-to="${cfg.toKey}" aria-label="選擇年">
+            <option value="">選年</option>
+            ${years.map(y => `<option value="${y}" ${String(y) === ym.year ? "selected" : ""}>${y} 年</option>`).join("")}
+          </select>
+          <select class="col-menu-ym col-menu-month border rounded px-1.5 py-1 text-xs flex-1" data-scope="${scope}" data-from="${cfg.fromKey}" data-to="${cfg.toKey}" aria-label="選擇月">
+            <option value="">整年</option>
+            ${Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, "0")).map(m => `<option value="${m}" ${m === ym.month ? "selected" : ""}>${Number(m)} 月</option>`).join("")}
+          </select>
+        </div>
         <label class="text-xs text-slate-500">日期起</label>
         <input type="date" class="col-menu-date border rounded px-2 py-1 text-xs w-full mb-1.5" data-scope="${scope}" data-key="${cfg.fromKey}" value="${cfg.from}"/>
         <label class="text-xs text-slate-500">日期迄</label>
@@ -928,6 +952,18 @@ function bindColumnFilters() {
   });
   document.querySelectorAll(".col-menu-date").forEach(inp => {
     inp.onchange = (e) => { COLUMN_FILTERS[inp.dataset.scope]()[inp.dataset.key] = e.target.value; render(); };
+  });
+  document.querySelectorAll(".col-menu-ym").forEach(sel => {
+    sel.onchange = () => {
+      const menu = sel.closest(".col-menu");
+      const m = menu.querySelector(".col-menu-month").value;
+      const y = menu.querySelector(".col-menu-year").value || (m ? todayISO().slice(0, 4) : "");   // 只選月份時用今年
+      const f = COLUMN_FILTERS[sel.dataset.scope]();
+      if (!y) { f[sel.dataset.from] = ""; f[sel.dataset.to] = ""; }
+      else if (!m) { f[sel.dataset.from] = `${y}-01-01`; f[sel.dataset.to] = `${y}-12-31`; }
+      else { f[sel.dataset.from] = `${y}-${m}-01`; f[sel.dataset.to] = monthLastDay(y, m); }
+      render();
+    };
   });
   document.querySelectorAll(".col-menu-date-clear").forEach(btn => {
     btn.onclick = () => {

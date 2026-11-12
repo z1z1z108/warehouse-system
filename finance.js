@@ -319,8 +319,10 @@ function finInvoiceSearchText(i) {
   return `${i.number} ${finPartyName(i)} ${i.note || ""} ${i.category || ""} ${i.project || ""} ${i.payee || ""} ${i.expenseNo || ""} ${(i.items || []).map(it => it.name).join(" ")}`;
 }
 // ---- 發票清單的欄位篩選（點欄位標題旁的 ▼，和庫存頁同一套） ----
+// 日期預設只看今年（1/1～12/31），由 1/1 開始往下排；要看其他年份就在日期欄的 ▼ 改
+function finInvThisYear() { const y = new Date().getFullYear(); return { dateFrom: `${y}-01-01`, dateTo: `${y}-12-31` }; }
 function finInvNewColFilter() {
-  return { noQuery: "", dateFrom: "", dateTo: "", numberQuery: "", categories: [], itemQuery: "", statuses: [], parties: [], noteQuery: "" };
+  return { noQuery: "", ...finInvThisYear(), numberQuery: "", categories: [], itemQuery: "", statuses: [], parties: [], noteQuery: "" };
 }
 const finInvColFilters = { purchase: finInvNewColFilter(), sales: finInvNewColFilter() };
 // 各欄要拿來篩選的值（清單型的值用 encodeURIComponent 當選項 id，名稱有 & 或引號也不會出錯）
@@ -335,11 +337,13 @@ function finInvColValues(i, st, pays) {
   };
 }
 function finInvColActive(cf) {
-  return !!(cf.noQuery || cf.dateFrom || cf.dateTo || cf.numberQuery || cf.itemQuery || cf.noteQuery || cf.categories.length || cf.statuses.length || cf.parties.length);
+  const year = finInvThisYear();   // 預設的今年不算「有篩選」，清除按鈕只在改過時出現
+  return !!(cf.noQuery || cf.dateFrom !== year.dateFrom || cf.dateTo !== year.dateTo || cf.numberQuery || cf.itemQuery || cf.noteQuery || cf.categories.length || cf.statuses.length || cf.parties.length);
 }
 function finFilteredInvoices(st, skipColumnFilters) {
   const f = finInvFilter;
-  let rows = db.finance.invoices.slice().sort((a, b) => (b.date + b.number).localeCompare(a.date + a.number));
+  // 依日期由早到晚排列（同一天再依發票號碼）
+  let rows = db.finance.invoices.slice().sort((a, b) => (a.date + a.number).localeCompare(b.date + b.number));
   if (f.kind) rows = rows.filter(i => i.kind === f.kind);
   if (f.month) rows = rows.filter(i => finMonthOf(i.date) === f.month);
   // 付款狀態篩選和清單「狀態」欄用同一組文字（進項就是付款方式），選什麼就只列出狀態欄顯示那樣的發票
@@ -662,16 +666,16 @@ function finRenderInvoices() {
   </div>
 
   <div class="flex items-center justify-between mb-1">
-    <p class="text-xs text-slate-500">點欄位標題旁的 ▼ 即可篩選${finInvColActive(colF) ? `，目前顯示 ${rows.length} 張` : ""}</p>
-    ${finInvColActive(colF) ? `<button id="inv-col-clear" class="text-xs text-blue-600 hover:underline">清除欄位篩選</button>` : ""}
+    <p class="text-xs text-slate-500">點欄位標題旁的 ▼ 即可篩選${finInvColActive(colF) ? `，目前顯示 ${rows.length} 張` : `，預設顯示今年（${finInvThisYear().dateFrom.slice(0, 4)} 年）共 ${rows.length} 張`}</p>
+    ${finInvColActive(colF) ? `<button id="inv-col-clear" class="text-xs text-blue-600 hover:underline">清除欄位篩選（回到今年）</button>` : ""}
   </div>
-  <div class="bg-white rounded-xl shadow-sm overflow-auto" style="max-height: 75vh">
+  <div class="bg-white rounded-xl shadow-sm overflow-auto" style="max-height: 75vh; ${String(colMenu.id || "").startsWith("finv:") ? "min-height: 340px;" : ""}">
     <table class="w-full text-sm">
       <thead class="text-slate-600 text-left">
         <tr class="whitespace-nowrap">
           <th class="${stickyTh} text-right">序</th>
           ${colTh("noQuery", "流水編號", "text", { value: colF.noQuery })}
-          ${colTh("date", "日期", "date", { from: colF.dateFrom, to: colF.dateTo, fromKey: "dateFrom", toKey: "dateTo" })}
+          ${colTh("date", "日期", "date", { from: colF.dateFrom, to: colF.dateTo, fromKey: "dateFrom", toKey: "dateTo", years: [...new Set(db.finance.invoices.map(x => x.date && x.date.slice(0, 4)).filter(Boolean))] })}
           ${colTh("numberQuery", "發票號碼", "text", { value: colF.numberQuery })}
           ${colTh("categories", "類別", "list", { options: listOptions(v => v.category), selected: colF.categories })}
           ${colTh("itemQuery", "品項", "text", { value: colF.itemQuery })}
