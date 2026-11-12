@@ -22,6 +22,7 @@ function navigateTo(patch) {
 function goBack() {
   if (!navHistory.length) return;
   view = navHistory.pop();
+  restoreScrollOnce = true;
   render();
 }
 
@@ -200,8 +201,44 @@ function render() {
     sessionStorage.removeItem("wms_session");
   }
   if (!session) { root.innerHTML = renderLogin(); bindLogin(); return; }
+  const before = captureScroll();
+  if (before) pageScrollMemory[before.page] = before;
   root.innerHTML = renderLayout();
   bindLayout();
+  // 同一頁重繪（按選項、勾選、存檔）保留捲動位置；按「上一頁／儲存」回到前一頁時，回到離開時的位置
+  const keep = before && before.page === view.page ? before : (restoreScrollOnce && pageScrollMemory[view.page]);
+  restoreScrollOnce = false;
+  if (keep) applyScroll(keep);
+  if (scrollToRowId) {
+    const row = document.querySelector(`[data-row-id="${CSS.escape(scrollToRowId)}"]`);
+    scrollToRowId = "";
+    if (row) {
+      row.scrollIntoView({ block: "center" });
+      row.classList.add("row-flash");
+      setTimeout(() => row.classList.remove("row-flash"), 1600);
+    }
+  }
+}
+
+// ---- 捲動位置 ----
+// 主畫面（main）和裡面可捲動的表格都記下來，重繪後依順序還原
+const pageScrollMemory = {};
+let restoreScrollOnce = false;
+let scrollToRowId = "";
+let lastRenderedPage = null;
+function scrollBoxes() {
+  const main = document.querySelector("main");
+  return main ? [main, ...main.querySelectorAll(".overflow-auto, .overflow-x-auto, .overflow-y-auto")] : [];
+}
+function captureScroll() {
+  const page = lastRenderedPage;
+  lastRenderedPage = view.page;
+  const boxes = scrollBoxes();
+  if (page == null || !boxes.length) return null;
+  return { page, pos: boxes.map(b => [b.scrollTop, b.scrollLeft]) };
+}
+function applyScroll(state) {
+  scrollBoxes().forEach((b, i) => { const p = state.pos[i]; if (p) { b.scrollTop = p[0]; b.scrollLeft = p[1]; } });
 }
 
 // 登入頁的示範帳號按鈕：依目前資料庫裡實際存在的帳號產生（匯入備份後會自動帶出各客戶帳號）

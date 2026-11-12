@@ -166,7 +166,7 @@ function finEntryCategoryParts(e) {
 function finInvoicePayments() {
   const out = {};
   db.finance.ledger.forEach(e => (e.allocations || []).forEach(a => {
-    (out[a.invoiceId] = out[a.invoiceId] || []).push({ entryId: e.id, no: e.no || "", accountId: e.accountId, date: e.date, amount: a.amount });
+    (out[a.invoiceId] = out[a.invoiceId] || []).push({ entryId: e.id, no: e.no || "", accountId: e.accountId, date: e.date, amount: a.amount, auto: !!a.auto });
   }));
   Object.values(out).forEach(list => list.sort((a, b) => a.date.localeCompare(b.date)));
   return out;
@@ -385,7 +385,7 @@ const FIN_NONE_CELL = `<span class="text-slate-300">-</span>`;
 // 流水編號欄：已連結流水就列出流水編號（點了開啟核對）；還沒連結時顯示手動填的支出單號（例如 P09030、中部零用金）
 function finInvNoCell(list, inv) {
   if ((list || []).length) {
-    return list.map(p => `<button type="button" data-entry="${finEsc(p.entryId)}" class="inv-pay-link block text-left font-mono text-blue-600 hover:underline whitespace-nowrap" title="開啟這筆流水的核對">${finEsc(p.no) || "無編號"}</button>`).join("");
+    return list.map(p => `<button type="button" data-entry="${finEsc(p.entryId)}" class="inv-pay-link block text-left font-mono ${p.auto ? "text-blue-600" : "text-slate-500"} hover:underline whitespace-nowrap" title="${p.auto ? "系統自動核對" : "手動連結"}，點了開啟這筆流水的核對">${finEsc(p.no) || "無編號"}</button>`).join("");
   }
   return inv.expenseNo ? `<span class="font-mono text-slate-500 whitespace-nowrap" title="手動填的支出單號，還沒連結流水">${finEsc(inv.expenseNo)}</span>` : FIN_NONE_CELL;
 }
@@ -688,7 +688,7 @@ function finRenderInvoices() {
       </thead>
       <tbody>
         ${rows.map((i, n) => { const open = finInvExpanded.has(i.id); return `
-          <tr class="inv-row border-t hover:bg-slate-50 cursor-pointer" data-id="${finEsc(i.id)}">
+          <tr class="inv-row border-t hover:bg-slate-50 cursor-pointer" data-id="${finEsc(i.id)}" data-row-id="${finEsc(i.id)}">
             <td class="px-3 py-2 text-right text-xs text-slate-400">${n + 1}</td>
             <td class="px-3 py-2">${finInvNoCell(pays[i.id], i)}</td>
             <td class="px-3 py-2 text-slate-500 whitespace-nowrap">${finEsc(i.date)}</td>
@@ -765,7 +765,7 @@ function finBindInvoices() {
 
   $("inv-client").onchange = () => { finInvDraft.clientId = $("inv-client").value; };
   $("inv-date").onchange = () => { finInvDraft.date = $("inv-date").value; };
-  $("inv-cancel-edit")?.addEventListener("click", () => { finInvEndEdit(); render(); });
+  $("inv-cancel-edit")?.addEventListener("click", () => { scrollToRowId = finInvDraft.editId; finInvEndEdit(); render(); });
   $("inv-form-toggle").onclick = () => {
     if (d.editId) return;   // 編輯中不收起，避免看不到正在改的內容
     finSetInvFormCollapsed(!finInvFormCollapsed);
@@ -838,6 +838,7 @@ function finBindInvoices() {
         if (isPurchase && fields.payMethod !== (editing.payMethod || "") && (finInvoicePayments()[editing.id] || []).length) fields.payMethodManual = true;
         Object.assign(editing, fields);
         finInvEndEdit();
+        scrollToRowId = editing.id;   // 存檔後回到剛剛改的那一筆
         finSave();
         // 改了類別，連結的流水類別也要對齊（空的直接帶入，不同就問）
         if (categoryChanged && fields.category) {

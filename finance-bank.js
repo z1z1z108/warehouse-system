@@ -251,7 +251,7 @@ function finAutoMatch() {
     }
     if (cands.length === 1) {
       const inv = cands[0];
-      e.allocations = [{ invoiceId: inv.id, amount: e.amount }];
+      e.allocations = [{ invoiceId: inv.id, amount: e.amount, auto: true }];
       if (kind === "sales") e.clientId = inv.clientId;
       remaining[inv.id] = 0;
       matched++;
@@ -585,7 +585,7 @@ function finRenderLedger() {
       </thead>
       <tbody>
         ${pageRows.map(e => { const rs = finReconStatus(e, ctx); const nums = (e.allocations || []).map(a => invById[a.invoiceId]?.number).filter(Boolean); const transfer = finIsTransfer(e); const splits = e.splits || []; const splitOpen = finLedgerExpanded.has(e.id); return `
-          <tr class="border-t hover:bg-slate-50 ${!e.category && !transfer ? "bg-amber-50/40" : ""}">
+          <tr class="border-t hover:bg-slate-50 ${!e.category && !transfer ? "bg-amber-50/40" : ""}" data-row-id="${finEsc(e.id)}">
             <td class="px-3 py-2"><input type="checkbox" class="led-sel" data-id="${finEsc(e.id)}" ${finLedgerSel.has(e.id) ? "checked" : ""}/></td>
             <td class="px-3 py-2 whitespace-nowrap"><div class="font-mono">${finEsc(e.no) || `<span class="text-slate-300">-</span>`}</div>${f.account ? "" : `<div class="text-[11px] text-slate-400">${finEsc(finAccountName(e.accountId))}</div>`}</td>
             <td class="px-3 py-2 text-slate-500 whitespace-nowrap" title="${finEsc(e.date)}">${finEsc(finShortDate(e.date))}</td>
@@ -597,7 +597,7 @@ function finRenderLedger() {
             <td class="px-3 py-2">
               ${(e.allocations || []).filter(a => invById[a.invoiceId]).map(a => `
                 <div class="flex items-center gap-1 whitespace-nowrap">
-                  <button type="button" data-id="${finEsc(e.id)}" class="led-recon-btn text-left font-mono text-blue-600 hover:underline" title="開啟核對（${finMoney(a.amount)}）">${finEsc(invById[a.invoiceId].number) || "（無號碼）"}</button>
+                  <button type="button" data-id="${finEsc(e.id)}" class="led-recon-btn text-left font-mono ${a.auto ? "text-blue-600" : "text-slate-500"} hover:underline" title="${a.auto ? "系統自動核對" : "手動連結"}（${finMoney(a.amount)}），點了開啟核對">${finEsc(invById[a.invoiceId].number) || "（無號碼）"}</button>
                   <button type="button" data-id="${finEsc(e.id)}" data-inv="${finEsc(a.invoiceId)}" class="led-inv-unlink text-slate-300 hover:text-rose-500 px-1" title="取消連結這張發票" aria-label="取消連結發票 ${finEsc(invById[a.invoiceId].number)}">✕</button>
                 </div>`).join("")}
               ${!transfer && e.amount - finEntryAllocated(e) - finEntrySplitTotal(e) > 0
@@ -733,8 +733,8 @@ function finBindLedger() {
   const bf = (id, key) => finBindFilter(id, finLedgerFilter, key, resetPage);
   bf("led-f-account", "account"); bf("led-f-type", "type"); bf("led-f-category", "category"); bf("led-f-recon", "recon"); bf("led-f-month", "month"); bf("led-f-q", "q");
   $("led-f-clear").onclick = () => { finLedgerFilter = { account: "", type: "", category: "", recon: "", month: "", q: "" }; resetPage(); render(); };
-  $("led-prev")?.addEventListener("click", () => { if (finLedgerPage > 0) { finLedgerPage--; render(); } });
-  $("led-next")?.addEventListener("click", () => { finLedgerPage++; render(); });
+  $("led-prev")?.addEventListener("click", () => { if (finLedgerPage > 0) { finLedgerPage--; render(); document.querySelector("main").scrollTop = 0; } });
+  $("led-next")?.addEventListener("click", () => { finLedgerPage++; render(); document.querySelector("main").scrollTop = 0; });
   $("led-export-btn").onclick = () => {
     const ctx = finReconContext();
     const invById = Object.fromEntries(db.finance.invoices.map(i => [i.id, i]));
@@ -922,7 +922,7 @@ function finBindEntryEdit() {
     const categoryChanged = (e.category || "") !== $("ee-category").value.trim();
     Object.assign(e, { date, accountId: $("ee-account").value, type, category: $("ee-category").value.trim(), amount, fee, counterparty: $("ee-party").value.trim(), content: $("ee-content").value.trim(), note: $("ee-note").value.trim() });
     saveDB(db);
-    goBack();
+    scrollToRowId = e.id; goBack();
     if (categoryChanged) finSyncCategories([e], "ledger");
   };
 }
@@ -1142,7 +1142,7 @@ function finBindEntrySplit() {
     vendorsToRemember.forEach(finRememberVendor);
     saveDB(db);
     finSplitDraft = null;
-    goBack();
+    scrollToRowId = e.id; goBack();
   };
   totals();
 }
@@ -1335,7 +1335,7 @@ function finBindReconcile() {
   $("rc-cancel-btn").onclick = goBack;
   $("rc-clear-btn").onclick = () => {
     e.allocations = []; delete e.loanId; delete e.noMatch;
-    saveDB(db); finReconDraft = null; goBack();
+    saveDB(db); finReconDraft = null; scrollToRowId = e.id; goBack();
   };
   $("rc-save-btn").onclick = () => {
     const fail = msg => showMsg("rc-msg", msg, true);
@@ -1355,7 +1355,9 @@ function finBindReconcile() {
         if (!c) return fail("有發票已不存在，請重新整理後再試");
         if (amt === null) return fail(`發票 ${c.inv.number || "（未填號碼）"} 的分配金額請輸入大於 0 的整數`);
         if (amt > c.remaining) return fail(`發票 ${c.inv.number || "（未填號碼）"} 只剩 ${finMoney(c.remaining)} 未核對，分配金額不能更多`);
-        allocations.push({ invoiceId, amount: amt });
+        // 系統自動核對上的發票，金額沒改就保留「自動」標記（藍字）
+        const prev = (e.allocations || []).find(a => a.invoiceId === invoiceId);
+        allocations.push(prev?.auto && prev.amount === amt ? { invoiceId, amount: amt, auto: true } : { invoiceId, amount: amt });
       }
       const sum = allocations.reduce((s, a) => s + a.amount, 0);
       if (sum + finEntrySplitTotal(e) > e.amount) return fail(`分配合計 ${finMoney(sum)}${finEntrySplitTotal(e) ? ` 加上已拆分 ${finMoney(finEntrySplitTotal(e))}` : ""} 超過這筆流水的金額 ${finMoney(e.amount)}`);
@@ -1370,7 +1372,7 @@ function finBindReconcile() {
         e.allocations = allocations; delete e.loanId; delete e.noMatch;
         saveDB(db);
         finReconDraft = null;
-        goBack();
+        scrollToRowId = e.id; goBack();
         finSyncCategories([e], "link");
       };
       if (shortOnes.length) {
@@ -1381,7 +1383,7 @@ function finBindReconcile() {
     }
     saveDB(db);
     finReconDraft = null;
-    goBack();
+    scrollToRowId = e.id; goBack();
   };
 }
 
