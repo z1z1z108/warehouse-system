@@ -955,26 +955,29 @@ function finSplitDetailHtml(e) {
   const money = v => v === undefined || v === "" ? `<span class="text-slate-300">-</span>` : finMoney(v);
   return `
     <div class="overflow-x-auto">
-    <table class="w-full text-xs bg-white border rounded" style="min-width: 1100px">
-      <thead class="text-slate-500 text-left"><tr>
-        <th class="px-3 py-1.5">明細編號</th><th class="px-3 py-1.5">發票日期</th><th class="px-3 py-1.5">憑證／號碼</th><th class="px-3 py-1.5">廠商</th><th class="px-3 py-1.5">收款方</th>
-        <th class="px-3 py-1.5">類別</th><th class="px-3 py-1.5">專案/工程</th><th class="px-3 py-1.5">品項</th>
-        <th class="px-3 py-1.5 text-right">未稅</th><th class="px-3 py-1.5 text-right">稅額</th><th class="px-3 py-1.5 text-right">含稅總額</th><th class="px-3 py-1.5">備註</th>
+    <table class="w-full text-sm bg-white border rounded" style="min-width: 1100px">
+      <thead class="bg-slate-100 text-slate-600 text-left"><tr>
+        <th class="px-3 py-2">序</th><th class="px-3 py-2 whitespace-nowrap">明細編號</th><th class="px-3 py-2">日期</th><th class="px-3 py-2 whitespace-nowrap">發票號碼</th>
+        <th class="px-3 py-2">類別</th><th class="px-3 py-2">品項</th>
+        <th class="px-3 py-2 text-right">未稅</th><th class="px-3 py-2 text-right">稅額</th><th class="px-3 py-2 text-right whitespace-nowrap">含稅總額</th>
+        <th class="px-3 py-2 whitespace-nowrap">憑證類別</th><th class="px-3 py-2">廠商</th><th class="px-3 py-2">收款方</th><th class="px-3 py-2 whitespace-nowrap">專案/工程</th><th class="px-3 py-2">備註</th>
       </tr></thead>
       <tbody>${e.splits.map((x, i) => { const r = finSplitToRow(x); return `
         <tr class="border-t">
-          <td class="px-3 py-1.5 font-mono whitespace-nowrap">${e.no ? `${finEsc(e.no)}-${i + 1}` : i + 1}</td>
-          <td class="px-3 py-1.5 whitespace-nowrap">${cell(r.date)}</td>
-          <td class="px-3 py-1.5 whitespace-nowrap">${finEsc(r.voucherType)}${r.number ? `<div class="font-mono text-slate-500">${finEsc(r.number)}</div>` : ""}</td>
-          <td class="px-3 py-1.5">${cell(r.vendor)}</td>
-          <td class="px-3 py-1.5">${cell(r.payee)}</td>
-          <td class="px-3 py-1.5 whitespace-nowrap">${finEsc(r.category || e.category) || "未分類"}</td>
-          <td class="px-3 py-1.5">${cell(r.project)}</td>
-          <td class="px-3 py-1.5">${cell(r.item)}</td>
-          <td class="px-3 py-1.5 text-right whitespace-nowrap">${money(x.net ?? x.amount)}</td>
-          <td class="px-3 py-1.5 text-right whitespace-nowrap">${money(x.tax ?? 0)}</td>
-          <td class="px-3 py-1.5 text-right font-medium whitespace-nowrap">${finMoney(x.amount)}</td>
-          <td class="px-3 py-1.5 text-slate-500">${cell(r.note)}</td>
+          <td class="px-3 py-2 text-right text-xs text-slate-400">${i + 1}</td>
+          <td class="px-3 py-2 font-mono whitespace-nowrap">${e.no ? `${finEsc(e.no)}-${i + 1}` : i + 1}</td>
+          <td class="px-3 py-2 text-slate-500 whitespace-nowrap">${cell(r.date)}</td>
+          <td class="px-3 py-2 font-mono whitespace-nowrap">${cell(r.number)}</td>
+          <td class="px-3 py-2 whitespace-nowrap">${finEsc(r.category || e.category) || "未分類"}</td>
+          <td class="px-3 py-2">${cell(r.item)}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap">${money(x.net ?? x.amount)}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap">${money(x.tax ?? 0)}</td>
+          <td class="px-3 py-2 text-right font-semibold whitespace-nowrap">${finMoney(x.amount)}</td>
+          <td class="px-3 py-2 whitespace-nowrap">${cell(r.voucherType)}</td>
+          <td class="px-3 py-2">${cell(r.vendor)}</td>
+          <td class="px-3 py-2">${cell(r.payee)}</td>
+          <td class="px-3 py-2">${cell(r.project)}</td>
+          <td class="px-3 py-2 text-slate-500">${cell(r.note)}</td>
         </tr>`; }).join("")}
       </tbody>
     </table>
@@ -993,18 +996,18 @@ function finSplitRow(r, idx) {
     </div>
     <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
       ${inp("date", "發票日期", `type="date"`)}
-      <label class="block"><span class="text-xs text-slate-500">憑證類別</span><select data-field="voucherType" aria-label="第 ${idx + 1} 筆憑證類別" class="w-full border rounded px-2 py-1.5 text-sm mt-0.5">${vouchers.map(v => `<option value="${finEsc(v)}" ${v === r.voucherType ? "selected" : ""}>${finEsc(v)}</option>`).join("")}</select></label>
       ${inp("number", "發票/收據號碼", `placeholder="選填"`)}
-      ${inp("vendor", "開立公司（廠商）", `list="sp-vendor-list" autocomplete="off" placeholder="選填"`)}
-      ${inp("payee", "收款方（廠商／員工）", `list="sp-payee-list" autocomplete="off" placeholder="例：員工姓名"`)}
       <label class="block"><span class="text-xs text-slate-500">類別</span><select data-field="category" aria-label="第 ${idx + 1} 筆類別" class="w-full border rounded px-2 py-1.5 text-sm mt-0.5">${finCategoryOptions("expense", r.category)}</select></label>
-      ${inp("project", "專案/工程", `list="sp-project-list" autocomplete="off" placeholder="選填"`)}
-      <div class="col-span-2 md:col-span-1 lg:col-span-2">${inp("item", "品項", `placeholder="例：RFK-7997、差旅費"`)}</div>
+      <div class="col-span-2 md:col-span-1 lg:col-span-3">${inp("item", "品項", `placeholder="例：RFK-7997、差旅費"`)}</div>
       ${money("net", "未稅")}
       ${money("tax", "稅額")}
       ${money("amount", "含稅總額")}
+      <label class="block"><span class="text-xs text-slate-500">憑證類別</span><select data-field="voucherType" aria-label="第 ${idx + 1} 筆憑證類別" class="w-full border rounded px-2 py-1.5 text-sm mt-0.5">${vouchers.map(v => `<option value="${finEsc(v)}" ${v === r.voucherType ? "selected" : ""}>${finEsc(v)}</option>`).join("")}</select></label>
+      ${inp("vendor", "開立公司（廠商）", `list="sp-vendor-list" autocomplete="off" placeholder="選填"`)}
+      ${inp("payee", "收款方（廠商／員工）", `list="sp-payee-list" autocomplete="off" placeholder="例：員工姓名"`)}
+      <div class="col-span-2 lg:col-span-2">${inp("project", "專案/工程", `list="sp-project-list" autocomplete="off" placeholder="選填"`)}</div>
+      <div class="col-span-2 md:col-span-2 lg:col-span-4">${inp("note", "備註", `placeholder="選填"`)}</div>
     </div>
-    <div class="mt-2">${inp("note", "備註", `placeholder="選填"`)}</div>
   </div>`;
 }
 function finRenderEntrySplit() {
