@@ -16,6 +16,9 @@ let finLedgerDraft = { accountId: "", type: "expense", date: "" };
 let finLedgerPage = 0;
 const finLedgerSel = new Set();
 const finLedgerExpanded = new Set();
+// 流水帳發票號碼欄：按了「＋ 新增發票號碼」而展開輸入框的流水（一筆流水可以連多張發票，都在同一格）
+const finLedgerInvAdding = new Set();
+let finLedgerInvFocus = "";
 let finSplitDraft = null;
 const FIN_PAGE_SIZE = 100;
 let finReconDraft = null;
@@ -132,6 +135,9 @@ function finLinkInvoiceByNumber(e, raw) {
     delete e.noMatch;
     delete e.loanId;
     if (kind === "sales") e.clientId = inv.clientId;
+    // 連完一張後輸入框留著，可以接著 KEY 下一張（還有餘額時）
+    finLedgerInvAdding.add(e.id);
+    finLedgerInvFocus = e.id;
     saveDB(db);
     finRenderKeepScroll();
     finSyncCategories([e], "link");
@@ -581,16 +587,24 @@ function finRenderLedger() {
         ${pageRows.map(e => { const rs = finReconStatus(e, ctx); const nums = (e.allocations || []).map(a => invById[a.invoiceId]?.number).filter(Boolean); const transfer = finIsTransfer(e); const splits = e.splits || []; const splitOpen = finLedgerExpanded.has(e.id); return `
           <tr class="border-t hover:bg-slate-50 ${!e.category && !transfer ? "bg-amber-50/40" : ""}">
             <td class="px-3 py-2"><input type="checkbox" class="led-sel" data-id="${finEsc(e.id)}" ${finLedgerSel.has(e.id) ? "checked" : ""}/></td>
-            <td class="px-3 py-2 whitespace-nowrap"><div class="font-mono text-xs">${finEsc(e.no) || `<span class="text-slate-300">-</span>`}</div>${f.account ? "" : `<div class="text-[11px] text-slate-400">${finEsc(finAccountName(e.accountId))}</div>`}</td>
-            <td class="px-3 py-2 text-xs text-slate-500 whitespace-nowrap" title="${finEsc(e.date)}">${finEsc(finShortDate(e.date))}</td>
+            <td class="px-3 py-2 whitespace-nowrap"><div class="font-mono">${finEsc(e.no) || `<span class="text-slate-300">-</span>`}</div>${f.account ? "" : `<div class="text-[11px] text-slate-400">${finEsc(finAccountName(e.accountId))}</div>`}</td>
+            <td class="px-3 py-2 text-slate-500 whitespace-nowrap" title="${finEsc(e.date)}">${finEsc(finShortDate(e.date))}</td>
             <td class="px-3 py-2">${transfer ? `<span class="text-slate-500">${finEsc(e.category)}</span>` : `<select class="led-cat-input border rounded-lg px-2 py-1 text-sm w-40 ${e.category ? "" : "border-amber-300"}" data-id="${finEsc(e.id)}" aria-label="類別">${finCategoryOptions(e.type, e.category)}</select>`}${splits.length ? `<button type="button" data-id="${finEsc(e.id)}" class="led-split-toggle block text-xs text-blue-600 mt-1" aria-expanded="${splitOpen}"><span class="led-split-chevron">${splitOpen ? "▾" : "▸"}</span> 拆分 ${splits.length} 筆</button>` : ""}</td>
             <td class="px-3 py-2">
               ${e.content ? `<div>${finEsc(e.content)}</div>` : ""}
               ${e.ref ? `<div class="text-xs text-slate-400">${finEsc(e.ref)}</div>` : ""}
             </td>
             <td class="px-3 py-2">
-              ${nums.length ? `<button type="button" data-id="${finEsc(e.id)}" class="led-recon-btn block text-left text-xs font-mono text-blue-600 hover:underline" title="開啟核對">${finEsc(nums.join("、"))}</button>` : ""}
-              ${!transfer && e.amount - finEntryAllocated(e) - finEntrySplitTotal(e) > 0 ? `<input class="led-inv-input border rounded px-2 py-1 text-xs w-full ${nums.length ? "mt-1" : ""} font-mono" list="${e.type === "income" ? "led-inv-sales" : "led-inv-purchase"}" data-id="${finEsc(e.id)}" autocomplete="off" aria-label="輸入發票號碼" placeholder="KEY 發票號碼後按 Enter"/>` : ""}
+              ${(e.allocations || []).filter(a => invById[a.invoiceId]).map(a => `
+                <div class="flex items-center gap-1 whitespace-nowrap">
+                  <button type="button" data-id="${finEsc(e.id)}" class="led-recon-btn text-left font-mono text-blue-600 hover:underline" title="開啟核對（${finMoney(a.amount)}）">${finEsc(invById[a.invoiceId].number) || "（無號碼）"}</button>
+                  <button type="button" data-id="${finEsc(e.id)}" data-inv="${finEsc(a.invoiceId)}" class="led-inv-unlink text-slate-300 hover:text-rose-500 px-1" title="取消連結這張發票" aria-label="取消連結發票 ${finEsc(invById[a.invoiceId].number)}">✕</button>
+                </div>`).join("")}
+              ${!transfer && e.amount - finEntryAllocated(e) - finEntrySplitTotal(e) > 0
+                ? (nums.length && !finLedgerInvAdding.has(e.id)
+                  ? `<button type="button" data-id="${finEsc(e.id)}" class="led-inv-add text-xs text-blue-600 hover:underline mt-1 whitespace-nowrap">＋ 新增發票號碼</button>`
+                  : `<input class="led-inv-input border rounded px-2 py-1 text-sm w-full ${nums.length ? "mt-1" : ""} font-mono" list="${e.type === "income" ? "led-inv-sales" : "led-inv-purchase"}" data-id="${finEsc(e.id)}" autocomplete="off" aria-label="輸入發票號碼" placeholder="KEY 發票號碼後按 Enter"/>`)
+                : ""}
             </td>
             ${(() => {
               const balanceTitle = e.balance != null && e.balance !== "" ? `title="對帳單餘額 ${finMoney(e.balance)}"` : "";
@@ -798,6 +812,28 @@ function finBindLedger() {
       if (ev.inputType && ev.inputType !== "insertReplacementText") return;
       const e = entry();
       if (e && inp.value.trim()) finLinkInvoiceByNumber(e, inp.value);
+    };
+    // 沒有輸入就離開時收回成「＋ 新增發票號碼」（已有發票時）
+    inp.onblur = () => {
+      if (inp.value.trim() || !finLedgerInvAdding.has(inp.dataset.id)) return;
+      setTimeout(() => { if (document.activeElement !== inp && !inp.value.trim() && !document.querySelector("[role=dialog]")) { finLedgerInvAdding.delete(inp.dataset.id); finRenderKeepScroll(); } }, 200);
+    };
+    if (finLedgerInvFocus === inp.dataset.id) inp.focus({ preventScroll: true });
+  });
+  finLedgerInvFocus = "";
+  document.querySelectorAll(".led-inv-add").forEach(b => {
+    b.onclick = () => { finLedgerInvAdding.add(b.dataset.id); finLedgerInvFocus = b.dataset.id; finRenderKeepScroll(); };
+  });
+  document.querySelectorAll(".led-inv-unlink").forEach(b => {
+    b.onclick = () => {
+      const e = db.finance.ledger.find(x => x.id === b.dataset.id);
+      const inv = db.finance.invoices.find(x => x.id === b.dataset.inv);
+      if (!e || !inv) return;
+      appConfirm(`取消 ${e.no || "這筆流水"} 和發票 ${inv.number || ""}（${finPartyName(inv)}）的連結？`, () => {
+        e.allocations = (e.allocations || []).filter(a => a.invoiceId !== inv.id);
+        saveDB(db);
+        finRenderKeepScroll();
+      }, { okLabel: "取消連結" });
     };
   });
   document.querySelectorAll(".led-untransfer-btn").forEach(b => {

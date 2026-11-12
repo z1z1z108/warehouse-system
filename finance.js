@@ -385,9 +385,9 @@ const FIN_NONE_CELL = `<span class="text-slate-300">-</span>`;
 // 流水編號欄：已連結流水就列出流水編號（點了開啟核對）；還沒連結時顯示手動填的支出單號（例如 P09030、中部零用金）
 function finInvNoCell(list, inv) {
   if ((list || []).length) {
-    return list.map(p => `<button type="button" data-entry="${finEsc(p.entryId)}" class="inv-pay-link block text-left text-xs font-mono text-blue-600 hover:underline whitespace-nowrap" title="開啟這筆流水的核對">${finEsc(p.no) || "無編號"}</button>`).join("");
+    return list.map(p => `<button type="button" data-entry="${finEsc(p.entryId)}" class="inv-pay-link block text-left font-mono text-blue-600 hover:underline whitespace-nowrap" title="開啟這筆流水的核對">${finEsc(p.no) || "無編號"}</button>`).join("");
   }
-  return inv.expenseNo ? `<span class="text-xs font-mono text-slate-500 whitespace-nowrap" title="手動填的支出單號，還沒連結流水">${finEsc(inv.expenseNo)}</span>` : FIN_NONE_CELL;
+  return inv.expenseNo ? `<span class="font-mono text-slate-500 whitespace-nowrap" title="手動填的支出單號，還沒連結流水">${finEsc(inv.expenseNo)}</span>` : FIN_NONE_CELL;
 }
 function finInvDetailHtml(inv, pays) {
   const items = inv.items || [];
@@ -691,10 +691,10 @@ function finRenderInvoices() {
           <tr class="inv-row border-t hover:bg-slate-50 cursor-pointer" data-id="${finEsc(i.id)}">
             <td class="px-3 py-2 text-right text-xs text-slate-400">${n + 1}</td>
             <td class="px-3 py-2">${finInvNoCell(pays[i.id], i)}</td>
-            <td class="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">${finEsc(i.date)}</td>
-            <td class="px-3 py-2 font-mono text-xs whitespace-nowrap">${finEsc(i.number) || "-"}</td>
-            <td class="px-3 py-2 text-xs whitespace-nowrap">${finEsc(i.category) || "-"}</td>
-            <td class="px-3 py-2 text-xs">${(i.items || []).length ? `${finEsc(i.items[0].name)}${i.items.length > 1 ? ` 等 ${i.items.length} 項` : ""}` : "-"}</td>
+            <td class="px-3 py-2 text-slate-500 whitespace-nowrap">${finEsc(i.date)}</td>
+            <td class="px-3 py-2 font-mono whitespace-nowrap">${finEsc(i.number) || "-"}</td>
+            <td class="px-3 py-2 whitespace-nowrap">${finEsc(i.category) || "-"}</td>
+            <td class="px-3 py-2">${(i.items || []).length ? `${finEsc(i.items[0].name)}${i.items.length > 1 ? ` 等 ${i.items.length} 項` : ""}` : "-"}</td>
             <td class="px-3 py-2 text-right whitespace-nowrap">${finMoney(i.amount)}</td>
             <td class="px-3 py-2 text-right whitespace-nowrap">${finMoney(i.tax)}</td>
             <td class="px-3 py-2 text-right font-semibold whitespace-nowrap">${finMoney(i.total)}</td>
