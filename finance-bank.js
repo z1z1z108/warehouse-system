@@ -712,7 +712,15 @@ function finRenderLedger() {
                   <button type="button" data-id="${finEsc(e.id)}" class="led-recon-btn text-left font-mono ${a.auto ? "text-blue-600" : "text-slate-500"} hover:underline" title="${a.auto ? "系統自動核對" : "手動連結"}（${finMoney(a.amount)}），點了開啟核對">${finEsc(invById[a.invoiceId].number) || "（無號碼）"}</button>
                   <button type="button" data-id="${finEsc(e.id)}" data-inv="${finEsc(a.invoiceId)}" class="led-inv-unlink text-slate-300 hover:text-rose-500 px-1" title="取消連結這張發票" aria-label="取消連結發票 ${finEsc(invById[a.invoiceId].number)}">✕</button>
                 </div>`).join("")}
-              ${!transfer && e.amount - finEntryAllocated(e) - finEntrySplitTotal(e) > 0
+              ${/* 拆分明細裡的發票號碼也列在這裡，拆分收起來時也看得到；對應到發票登錄的用藍字，點了到發票登錄看那張 */
+                splits.filter(x => x.number).map(x => {
+                  const inv = x.invoiceId && invById[x.invoiceId];
+                  const tag = `<span class="text-[10px] text-slate-400 border border-slate-200 rounded px-1 ml-1" title="拆分明細 ${finEsc(x.no || "")}">拆</span>`;
+                  return `<div class="flex items-center whitespace-nowrap">${inv
+                    ? `<button type="button" data-inv="${finEsc(inv.id)}" class="sp-inv-link text-left font-mono text-blue-600 hover:underline" title="拆分明細 ${finEsc(x.no || "")}，已對應發票登錄（${finMoney(x.amount)}），點了查看這張發票">${finEsc(x.number)}</button>`
+                    : `<span class="font-mono text-slate-500" title="拆分明細 ${finEsc(x.no || "")}（${finMoney(x.amount)}），發票登錄找不到這個號碼">${finEsc(x.number)}</span>`}${tag}</div>`;
+                }).join("")}
+              ${/* 不需核對、貸款扣款的流水不用 KEY 發票號碼 */ !transfer && rs.code !== "nomatch" && rs.code !== "loan" && e.amount - finEntryAllocated(e) - finEntrySplitTotal(e) > 0
                 ? (nums.length && !finLedgerInvAdding.has(e.id)
                   ? `<button type="button" data-id="${finEsc(e.id)}" class="led-inv-add text-xs text-blue-600 hover:underline mt-1 whitespace-nowrap">＋ 新增發票號碼</button>`
                   : `<input class="led-inv-input border rounded px-2 py-1 text-sm w-full ${nums.length ? "mt-1" : ""} font-mono" list="${e.type === "income" ? "led-inv-sales" : "led-inv-purchase"}" data-id="${finEsc(e.id)}" autocomplete="off" aria-label="輸入發票號碼" placeholder="KEY 發票號碼後按 Enter"/>`)
