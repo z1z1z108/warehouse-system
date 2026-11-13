@@ -102,6 +102,16 @@ function finSyncCategories(entries, source, onlyInvoiceId) {
   }
 }
 
+// 發票的資訊帶入流水（只填空白欄位）：收款方 ← 廠商／客戶、類別 ← 發票類別、內容 ← 品項。回傳填了哪些欄位
+function finFillEntryFromInvoice(e, inv) {
+  const filled = [];
+  const party = finPartyName(inv);
+  if (!e.counterparty && party && party !== "-") { e.counterparty = party; filled.push("收款方"); }
+  if (!e.category && inv.category && (e.type === "income" ? FIN_INCOME_CATEGORIES : FIN_EXPENSE_CATEGORIES).includes(inv.category)) { e.category = inv.category; filled.push("類別"); }
+  const items = (inv.items || []).map(it => String(it.name || "").trim()).filter(Boolean);
+  if (!e.content && items.length) { e.content = items.join("、"); filled.push("內容"); }
+  return filled;
+}
 // 在流水帳 KEY 發票號碼連結發票：金額相符直接連結；不符先請使用者確認（可能是先付訂金）。
 // 連結後，發票的支出單號、付款日期、付款方式由 data.js 的 syncInvoicePayments 更新。
 function finLinkInvoiceByNumber(e, raw) {
@@ -124,12 +134,19 @@ function finLinkInvoiceByNumber(e, raw) {
   const inv = cands[0];
   const st = finSettlement()[inv.id];
   const label = `發票 ${inv.number}（${finPartyName(inv)}）`;
-  if (inv.payMethod === FIN_PAY_NONE) return alert(`${label} 的付款方式是「不支出」，不需要連結流水。`);
   if ((e.allocations || []).some(a => a.invoiceId === inv.id)) return alert(`${label} 已經連結這筆流水了。`);
-  if (inv.payMethod === FIN_PAY_CASH) return alert(`${label} 是現金付款，不需要連結銀行流水。`);
-  if (st.linkRemaining <= 0) return alert(`${label} 已經連結流水付清（${inv.expenseNo || "已付"}），請確認號碼是否正確。`);
+  // 不能再分配金額的發票（不支出、現金、已全部核對）：不連結，但可以把發票的資訊帶入這筆流水
+  const offerFill = reason => appConfirm(`${label} ${reason}，不能再分配金額。\n\n要把這張發票的資訊（收款方、類別、內容）帶入這筆流水嗎？\n只會填入流水上空白的欄位。`, () => {
+    const filled = finFillEntryFromInvoice(e, inv);
+    if (!filled.length) return alert("這筆流水的收款方、類別、內容都已經有資料，沒有需要帶入的。");
+    saveDB(db);
+    finRenderKeepScroll();
+  }, { okLabel: "帶入資訊" });
+  if (inv.payMethod === FIN_PAY_NONE) return offerFill("的付款方式是「不支出」");
+  if (inv.payMethod === FIN_PAY_CASH) return offerFill("是現金付款");
+  if (st.linkRemaining <= 0) return offerFill(`已經全部核對（${inv.expenseNo || "已付"}）`);
   const available = e.amount - finEntryAllocated(e) - finEntrySplitTotal(e);
-  if (available <= 0) return alert("這筆流水的金額已經分配完了。");
+  if (available <= 0) return offerFill("對應的這筆流水金額已經分配完了");
   if (kind === "sales" && (e.allocations || []).some(a => db.finance.invoices.find(i => i.id === a.invoiceId)?.clientId !== inv.clientId)) return alert("一筆入帳只能核對同一個客戶的發票。");
   const apply = () => {
     e.allocations = [...(e.allocations || []), { invoiceId: inv.id, amount: Math.min(available, st.linkRemaining) }];
@@ -640,9 +657,13 @@ function finRenderLedger() {
   </div>
 
   ${(() => {
-    // KEY 發票號碼時的提示：只列還沒付清的發票
+    // KEY 發票號碼時的提示：列出全部發票；已全部核對的也列出來（選了可以把資訊帶入流水）
     const st = finSettlement();
-    const list = kind => db.finance.invoices.filter(i => i.kind === kind && i.number && st[i.id].linkRemaining > 0).map(i => `<option value="${finEsc(i.number)}">${finEsc(finPartyName(i))} 待對帳 ${finMoney(st[i.id].linkRemaining)}</option>`).join("");
+    const pays = finInvoicePayments();
+    const hint = i => st[i.id].linkRemaining > 0 ? `待對帳 ${finMoney(st[i.id].linkRemaining)}`
+      : i.payMethod === FIN_PAY_NONE ? "不支出" : i.payMethod === FIN_PAY_CASH ? "現金付款"
+      : `已全部核對${(pays[i.id] || []).length ? `（${pays[i.id].map(p => p.no).filter(Boolean).join("、")}）` : ""}`;
+    const list = kind => db.finance.invoices.filter(i => i.kind === kind && i.number).map(i => `<option value="${finEsc(i.number)}">${finEsc(finPartyName(i))} ${finEsc(hint(i))}</option>`).join("");
     return `<datalist id="led-inv-purchase">${list("purchase")}</datalist><datalist id="led-inv-sales">${list("sales")}</datalist>`;
   })()}
   <div class="bg-slate-800 text-white rounded-xl px-4 py-2 mb-3 flex flex-wrap items-center gap-3 text-sm">
@@ -779,7 +800,22 @@ function finBindLedger() {
     const exact = db.finance.invoices.filter(i => i.kind === kind && finNormInvNo(i.number) === key);
     if (!exact.length) return fail(`找不到${kind === "sales" ? "銷項" : "進項"}發票「${raw}」。請確認號碼，或先到${kind === "sales" ? "應收帳款" : "發票登錄"}登錄這張發票。`);
     const pick = exact.find(i => !ids.includes(i.id) && st[i.id].linkRemaining > 0);
-    if (!pick) return fail(exact.some(i => ids.includes(i.id)) ? `發票「${raw}」已經加入了` : `發票「${raw}」已經對帳完畢，沒有待對帳金額`);
+    if (!pick && exact.some(i => ids.includes(i.id))) return fail(`發票「${raw}」已經加入了`);
+    if (!pick) {
+      // 已全部核對（或現金、不支出）的發票：不加入連結，只把資訊帶入表單空白的欄位
+      const inv = exact[0];
+      const filled = [];
+      const party = finPartyName(inv);
+      if (!$("led-party").value.trim() && party && party !== "-") { $("led-party").value = party; filled.push("收款方"); }
+      if (!$("led-category").value && inv.category && [...$("led-category").options].some(o => o.value === inv.category)) { $("led-category").value = inv.category; filled.push("類別"); }
+      const items = (inv.items || []).map(it => String(it.name || "").trim()).filter(Boolean);
+      if (!$("led-content").value.trim() && items.length) { $("led-content").value = items.join("、"); filled.push("內容"); }
+      if (!$("led-amount").value) { $("led-amount").value = inv.total; amountTouched = true; filled.push("金額"); }
+      updateJudge();
+      $("led-new-inv").value = "";
+      const why = inv.payMethod === FIN_PAY_NONE ? "付款方式是不支出" : inv.payMethod === FIN_PAY_CASH ? "是現金付款" : `已經全部核對（${inv.expenseNo || "已付"}）`;
+      return showMsg("led-msg", `發票「${inv.number}」${why}，不會連結；${filled.length ? `已帶入${filled.join("、")}` : "表單欄位都已經有資料，沒有帶入"}。`, false);
+    }
     if (kind === "sales" && ids.some(id => db.finance.invoices.find(i => i.id === id)?.clientId !== pick.clientId)) return fail("一筆入帳只能核對同一個客戶的發票");
     ids.push(pick.id);
     $("led-new-inv").value = "";
