@@ -173,6 +173,7 @@ function assignFinanceNumbers(f) {
 // 發票日期和付款日期由使用者自己填，不會被流水改掉。
 function syncInvoicePayments(f) {
   syncSplitLinks(f);
+  autoLinkByExpenseNo(f);
   const pays = {};
   finLedgerLinks(f).forEach(l => { (pays[l.invoiceId] = pays[l.invoiceId] || []).push(l); });
   syncLinkedVendorsAndCategories(f);
@@ -226,6 +227,44 @@ function syncSplitLinks(f) {
       const cands = k && !e.transferGroup ? byNo[`${kind}|${k}`] || [] : [];
       if (cands.length === 1) x.invoiceId = cands[0].id;
     });
+  });
+}
+// 發票的「支出單號」填了流水編號（例如 T10955），就自動連到那筆流水，不用手動核對。
+// 一筆匯款付很多張發票時，明細都記在發票登錄，流水帳只要一筆。
+// - 只處理還沒連結任何流水的發票；支出對進項、收入對銷項；內部轉帳、不支出的不連
+// - 分配金額 = 發票金額和流水還沒交代的金額取小的；流水已經分配滿就先不連
+// - 使用者把自動連上的取消掉（autoLinkedEntry 還在但連結不見了），就記住不再自動連（autoLinkSkip），
+//   之後支出單號改成別的編號才會再自動連
+function autoLinkByExpenseNo(f) {
+  const byNo = {};
+  f.ledger.forEach(e => { if (e.no) byNo[e.no.toUpperCase()] = e; });
+  const linked = new Set();
+  f.ledger.forEach(e => (e.allocations || []).forEach(a => linked.add(`${a.invoiceId}|${e.id}`)));
+  const anyLink = new Set(finLedgerLinks(f).map(l => l.invoiceId));
+  f.invoices.forEach(inv => {
+    if (inv.autoLinkedEntry && !linked.has(`${inv.id}|${inv.autoLinkedEntry}`)) {
+      const prev = f.ledger.find(e => e.id === inv.autoLinkedEntry);
+      inv.autoLinkSkip = prev && prev.no ? prev.no.toUpperCase() : String(inv.expenseNo || "").trim().toUpperCase();
+      delete inv.autoLinkedEntry;
+    }
+  });
+  f.invoices.forEach(inv => {
+    if (anyLink.has(inv.id) || inv.payMethod === "不支出") return;
+    const key = String(inv.expenseNo || "").trim().toUpperCase();
+    if (!key) return;
+    if (inv.autoLinkSkip && inv.autoLinkSkip !== key) delete inv.autoLinkSkip;
+    if (inv.autoLinkSkip === key) return;
+    const e = byNo[key];
+    if (!e || e.transferGroup || e.noMatch || e.loanId) return;
+    if ((e.type === "income" ? "sales" : "purchase") !== inv.kind) return;
+    if (inv.kind === "sales" && e.clientId && e.clientId !== inv.clientId) return;   // 一筆入帳只對同一個客戶
+    const room = e.amount - (e.allocations || []).reduce((s, a) => s + a.amount, 0) - (e.splits || []).reduce((s, x) => s + x.amount, 0);
+    const amount = Math.min(room, inv.total);
+    if (amount <= 0) return;
+    e.allocations = [...(e.allocations || []), { invoiceId: inv.id, amount, auto: true, byNo: true }];
+    if (inv.kind === "sales" && !e.clientId) e.clientId = inv.clientId;
+    inv.autoLinkedEntry = e.id;
+    anyLink.add(inv.id);
   });
 }
 // 流水連到發票的每一筆：整筆核對（allocations）和拆分明細對應的發票（拆分的用明細編號）

@@ -10,6 +10,21 @@
   .badge-已建立 { @apply bg-gray-200 text-gray-700; }
   /* 存檔後回到的那一筆：短暫標示 */
   .row-flash, .row-flash > td { background-color: #fef9c3 !important; transition: background-color .3s; }
+
+  /* 發票登錄、流水帳清單：淡色格線分欄、隔列淡底，顏色都用低飽和的灰藍 */
+  .grid-table { border-collapse: separate; border-spacing: 0; }
+  .grid-table > thead > tr > th { border-bottom: 1px solid #cbd5e1; border-right: 1px solid #dfe5ec; }
+  .grid-table > thead > tr > th:last-child { border-right: 0; }
+  .grid-table > tbody > tr > td { border-bottom: 1px solid #e6eaef; border-right: 1px solid #edf0f4; }
+  .grid-table > tbody > tr > td:last-child { border-right: 0; }
+  .grid-table > tbody > tr.data-row > td { background-color: #ffffff; }
+  .grid-table > tbody > tr.data-row.row-alt > td { background-color: #f7f9fb; }
+  .grid-table > tbody > tr.data-row.row-warn > td { background-color: #fbf8f1; }
+  .grid-table > tbody > tr.data-row:hover > td { background-color: #eef2f6; }
+  .grid-table > tbody > tr.detail-row > td { background-color: #f4f6f8; }
+  /* 正在編輯的那一列和下方展開的編輯區：淡米色，上下框線 */
+  .grid-table > tbody > tr.data-row.row-editing > td { background-color: #f3efe4; border-top: 2px solid #d9cfb6; }
+  .grid-table > tbody > tr.edit-row > td { background-color: #faf8f2; border-bottom: 2px solid #d9cfb6; border-right: 0; }
 </style>
 </head>
 <body class="bg-slate-50 min-h-screen">

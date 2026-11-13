@@ -93,10 +93,20 @@ function finInvStartEdit(id) {
     items: items.length ? items : [{ name: "", qty: "1", price: String(inv.amount) }],   // 沒有品項的發票，金額放在一行空白品項
   });
   render();
-  // 捲到表單（應收帳款頁的表單不在最上面）
-  document.getElementById("inv-form-toggle")?.scrollIntoView({ block: "start" });
-  document.getElementById("inv-number")?.focus();
+  // 捲到表單：在清單那一列下方展開；不在清單裡時是上方的表單
+  const box = document.querySelector(".inline-edit-box");
+  if (box) box.closest("tr").previousElementSibling.previousElementSibling.scrollIntoView({ block: "start" });
+  else document.getElementById("inv-form-toggle")?.scrollIntoView({ block: "start" });
+  document.getElementById("inv-number")?.focus({ preventScroll: true });
 }
+// 在清單裡展開的編輯表單：寬度跟著可見的表格區域，表格往右捲時表單不會跟著跑掉
+function finFitInlineEditBoxes() {
+  document.querySelectorAll(".inline-edit-box").forEach(box => {
+    const wrap = box.closest(".overflow-auto, .overflow-x-auto");
+    if (wrap) box.style.width = `${wrap.clientWidth - 34}px`;
+  });
+}
+window.addEventListener("resize", finFitInlineEditBoxes);
 function finInvEndEdit() {
   Object.assign(finInvDraft, finInvDraft.backup || {}, { editId: "", taxEdited: false, backup: null });
 }
@@ -153,13 +163,22 @@ function finAccountLabel(id) {
 }
 function finEntryAllocated(e) { return (e.allocations || []).reduce((s, a) => s + a.amount, 0); }
 function finEntrySplitTotal(e) { return (e.splits || []).reduce((s, x) => s + x.amount, 0); }
-// 一筆支出依類別拆開的金額：有拆分的算到各自類別，還沒拆分的餘額留在原類別
+// 一筆支出依類別拆開的金額：拆分明細算到各自類別、連結的發票算到發票的類別（一筆匯款付很多張發票時才準），
+// 兩者都沒交代到的餘額留在流水本身的類別
 function finEntryCategoryParts(e) {
   const parent = e.category || "未分類";
   const parts = {};
-  (e.splits || []).forEach(x => { const c = x.category || parent; parts[c] = (parts[c] || 0) + x.amount; });
-  const rest = e.amount - finEntrySplitTotal(e);
-  if (rest > 0) parts[parent] = (parts[parent] || 0) + rest;
+  const add = (c, amt) => { parts[c] = (parts[c] || 0) + amt; };
+  (e.splits || []).forEach(x => add(x.category || parent, x.amount));
+  let used = finEntrySplitTotal(e);
+  (e.allocations || []).forEach(a => {
+    const inv = db.finance.invoices.find(i => i.id === a.invoiceId);
+    const amt = Math.min(a.amount, Math.max(0, e.amount - used));
+    if (amt <= 0) return;
+    add((inv && inv.category) || parent, amt);
+    used += amt;
+  });
+  if (e.amount - used > 0) add(parent, e.amount - used);
   return parts;
 }
 // 每張發票對應到哪些流水（帳戶、編號、日期、金額）
@@ -523,13 +542,9 @@ function finRenderInvoices() {
   const baseRows = finFilteredInvoices(st, true);
   const listOptions = pick => [...new Set(baseRows.map(i => pick(finInvColValues(i, st, pays))))].sort((a, b) => a.localeCompare(b, "zh-Hant")).map(v => ({ id: encodeURIComponent(v), name: finEsc(v) }));
 
-  return `
-  <div class="bg-white rounded-xl shadow-sm ${finInvFormCollapsed && !editing ? "px-6 py-3" : "p-6"} mb-6 ${editing ? "ring-2 ring-amber-300" : ""}">
-    <button type="button" id="inv-form-toggle" class="w-full flex items-center justify-between text-left font-semibold text-sm text-slate-700 ${finInvFormCollapsed && !editing ? "" : "mb-3"}" aria-expanded="${!(finInvFormCollapsed && !editing)}" aria-controls="inv-form-body">
-      <span>${editing ? `編輯發票：${finEsc(editing.number) || "未填號碼"}` : isSales ? "登錄銷項發票（開給客戶）" : "登錄發票"}</span>
-      <span class="text-xs font-normal text-slate-500">${finInvFormCollapsed && !editing ? "▸ 展開" : "▾ 收起"}</span>
-    </button>
-    <div id="inv-form-body" class="${finInvFormCollapsed && !editing ? "hidden" : ""}">
+  // 編輯發票時，表單直接在清單裡那張發票下方展開；那張不在目前清單（被篩選掉）時才放在上方
+  const inlineEdit = !!editing && rows.some(r => r.id === editing.id);
+  const formFields = `
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
       <div>
         <label class="text-xs text-slate-500">類型</label>
@@ -628,11 +643,24 @@ function finRenderInvoices() {
     </div>
     <button id="inv-add-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">${editing ? "儲存變更" : "登錄發票"}</button>
     ${editing ? `<button id="inv-cancel-edit" class="border rounded-lg px-4 py-2 text-sm hover:bg-slate-100 ml-2">取消編輯</button>` : ""}
-    <p id="inv-msg" class="text-xs hidden mt-2"></p>
-    </div>
-  </div>
+    <p id="inv-msg" class="text-xs hidden mt-2"></p>`;
+
+  return `
+  ${inlineEdit ? `
+  <div class="bg-white rounded-xl shadow-sm px-6 py-3 mb-6 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
+    <span>正在下方清單中編輯發票「${finEsc(editing.number) || "未填號碼"}」，儲存或取消編輯後就能登錄新發票。</span>
+    <button type="button" id="inv-goto-edit" class="text-xs text-blue-600 hover:underline">跳到編輯中的發票</button>
+  </div>` : `
+  <div class="bg-white rounded-xl shadow-sm ${finInvFormCollapsed && !editing ? "px-6 py-3" : "p-6"} mb-6 ${editing ? "ring-2 ring-amber-200" : ""}">
+    <button type="button" id="inv-form-toggle" class="w-full flex items-center justify-between text-left font-semibold text-sm text-slate-700 ${finInvFormCollapsed && !editing ? "" : "mb-3"}" aria-expanded="${!(finInvFormCollapsed && !editing)}" aria-controls="inv-form-body">
+      <span>${editing ? `編輯發票：${finEsc(editing.number) || "未填號碼"}` : isSales ? "登錄銷項發票（開給客戶）" : "登錄發票"}</span>
+      <span class="text-xs font-normal text-slate-500">${finInvFormCollapsed && !editing ? "▸ 展開" : "▾ 收起"}</span>
+    </button>
+    <div id="inv-form-body" class="${finInvFormCollapsed && !editing ? "hidden" : ""}">${formFields}</div>
+  </div>`}
 
   ${finRenderInvImport(mode)}
+  ${isSales ? "" : finRenderAcctPaste()}
 
   <div class="bg-white rounded-xl shadow-sm p-4 mb-3">
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 items-end">
@@ -667,8 +695,8 @@ function finRenderInvoices() {
     <p class="text-xs text-slate-500">點欄位標題旁的 ▼ 即可篩選${finInvColActive(colF) ? `，目前顯示 ${rows.length} 張` : `，預設顯示今年（${finInvThisYear().dateFrom.slice(0, 4)} 年）共 ${rows.length} 張`}</p>
     ${finInvColActive(colF) ? `<button id="inv-col-clear" class="text-xs text-blue-600 hover:underline">清除欄位篩選（回到今年）</button>` : ""}
   </div>
-  <div class="bg-white rounded-xl shadow-sm overflow-auto" style="max-height: 75vh; ${String(colMenu.id || "").startsWith("finv:") ? "min-height: 340px;" : ""}">
-    <table class="w-full text-sm">
+  <div class="bg-white rounded-xl shadow-sm overflow-auto" style="${inlineEdit ? "" : "max-height: 75vh;"} ${String(colMenu.id || "").startsWith("finv:") ? "min-height: 340px;" : ""}">
+    <table class="grid-table w-full text-sm">
       <thead class="text-slate-600 text-left">
         <tr class="whitespace-nowrap">
           <th class="${stickyTh} text-right">序</th>
@@ -685,8 +713,8 @@ function finRenderInvoices() {
         </tr>
       </thead>
       <tbody>
-        ${rows.map((i, n) => { const open = finInvExpanded.has(i.id); return `
-          <tr class="inv-row border-t hover:bg-slate-50 cursor-pointer" data-id="${finEsc(i.id)}" data-row-id="${finEsc(i.id)}">
+        ${rows.map((i, n) => { const open = finInvExpanded.has(i.id); const isEdit = inlineEdit && i.id === editing.id; return `
+          <tr class="inv-row data-row ${n % 2 ? "row-alt" : ""} ${isEdit ? "row-editing" : ""} cursor-pointer" data-id="${finEsc(i.id)}" data-row-id="${finEsc(i.id)}">
             <td class="px-3 py-2 text-right text-xs text-slate-400">${n + 1}</td>
             <td class="px-3 py-2">${finInvNoCell(pays[i.id], i)}</td>
             <td class="px-3 py-2 text-slate-500 whitespace-nowrap">${finEsc(i.date)}</td>
@@ -702,9 +730,15 @@ function finRenderInvoices() {
             <td class="px-3 py-2 text-slate-500">${finEsc(i.note) || "-"}</td>
             <td class="px-3 py-2 text-right whitespace-nowrap sticky right-0 bg-white border-l"><button type="button" class="inv-toggle text-xs text-blue-600 hover:underline mr-2" aria-expanded="${open}"><span class="inv-chevron">${open ? "▾" : "▸"}</span> 明細${(i.items || []).length ? `（${i.items.length}）` : ""}</button><button data-id="${finEsc(i.id)}" class="inv-edit-btn text-slate-600 hover:underline text-xs mr-2">編輯</button><button data-id="${finEsc(i.id)}" class="inv-del-btn text-rose-500 hover:underline text-xs">刪除</button></td>
           </tr>
-          <tr class="${open ? "" : "hidden"} bg-slate-50">
+          <tr class="${open ? "" : "hidden"} detail-row">
             <td colspan="14" class="px-4 py-3">${finInvDetailHtml(i, pays[i.id])}</td>
-          </tr>`; }).join("") || `<tr><td colspan="14" class="px-4 py-8 text-center text-slate-400">${isSales ? "尚無銷項發票" : "尚無發票"}</td></tr>`}
+          </tr>
+          ${isEdit ? `<tr class="edit-row"><td colspan="14" class="px-4 py-4">
+            <div class="inline-edit-box sticky left-0">
+              <p class="font-semibold text-sm text-slate-700 mb-3">編輯發票：${finEsc(editing.number) || "未填號碼"}</p>
+              ${formFields}
+            </div>
+          </td></tr>` : ""}`; }).join("") || `<tr><td colspan="14" class="px-4 py-8 text-center text-slate-400">${isSales ? "尚無銷項發票" : "尚無發票"}</td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -764,11 +798,13 @@ function finBindInvoices() {
   $("inv-client").onchange = () => { finInvDraft.clientId = $("inv-client").value; };
   $("inv-date").onchange = () => { finInvDraft.date = $("inv-date").value; };
   $("inv-cancel-edit")?.addEventListener("click", () => { scrollToRowId = finInvDraft.editId; finInvEndEdit(); render(); });
-  $("inv-form-toggle").onclick = () => {
+  if ($("inv-form-toggle")) $("inv-form-toggle").onclick = () => {
     if (d.editId) return;   // 編輯中不收起，避免看不到正在改的內容
     finSetInvFormCollapsed(!finInvFormCollapsed);
     finRenderKeepScroll();
   };
+  $("inv-goto-edit")?.addEventListener("click", () => document.querySelector(".inline-edit-box")?.scrollIntoView({ block: "center" }));
+  finFitInlineEditBoxes();
 
   $("inv-add-btn").onclick = () => {
     const kind = d.kind;
@@ -863,6 +899,7 @@ function finBindInvoices() {
   $("inv-col-clear")?.addEventListener("click", () => { finInvColFilters[mode] = finInvNewColFilter(); render(); });
   bindColumnFilters();
   finBindInvImport(mode);
+  if (mode === "purchase") finBindAcctPaste();
   $("inv-export-btn").onclick = () => {
     const st = finSettlement();
     const pays = finInvoicePayments();

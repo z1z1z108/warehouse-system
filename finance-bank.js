@@ -18,6 +18,7 @@ const finLedgerSel = new Set();
 const finLedgerExpanded = new Set();
 // 流水帳發票號碼欄：按了「＋ 新增發票號碼」而展開輸入框的流水（一筆流水可以連多張發票，都在同一格）
 const finLedgerInvAdding = new Set();
+let finLedgerEditId = "";   // 正在清單裡展開編輯的流水
 let finLedgerInvFocus = "";
 let finSplitDraft = null;
 const FIN_PAGE_SIZE = 100;
@@ -426,6 +427,37 @@ function finFilteredLedger(ctx) {
   return rows;
 }
 
+// 新增流水時加入的發票（可多張）：列出號碼、對象、待對帳金額和合計
+function finNewEntryInvs() {
+  const st = finSettlement();
+  return (finLedgerDraft.invIds || []).map(id => db.finance.invoices.find(i => i.id === id)).filter(Boolean).map(inv => ({ inv, remaining: st[inv.id].linkRemaining }));
+}
+function finNewEntryInvListHtml() {
+  const rows = finNewEntryInvs();
+  if (!rows.length) return "";
+  const total = rows.reduce((s, r) => s + r.remaining, 0);
+  return `
+    <table class="text-sm w-full max-w-3xl border rounded mt-2">
+      <thead class="bg-slate-100 text-slate-600 text-left"><tr>
+        <th class="px-3 py-1.5">序</th><th class="px-3 py-1.5">發票號碼</th><th class="px-3 py-1.5">發票日期</th><th class="px-3 py-1.5">廠商／客戶</th><th class="px-3 py-1.5 text-right">待對帳金額</th><th class="px-3 py-1.5"></th>
+      </tr></thead>
+      <tbody>${rows.map(({ inv, remaining }, n) => `
+        <tr class="border-t">
+          <td class="px-3 py-1.5 text-xs text-slate-400">${n + 1}</td>
+          <td class="px-3 py-1.5 font-mono">${finEsc(inv.number)}</td>
+          <td class="px-3 py-1.5 text-slate-500 whitespace-nowrap">${finEsc(inv.date) || "-"}</td>
+          <td class="px-3 py-1.5">${finEsc(finPartyName(inv))}</td>
+          <td class="px-3 py-1.5 text-right">${finMoney(remaining)}</td>
+          <td class="px-3 py-1.5 text-center"><button type="button" class="led-new-inv-del text-slate-400 hover:text-rose-500 px-1" data-id="${finEsc(inv.id)}" title="移除這張發票" aria-label="移除發票 ${finEsc(inv.number)}">✕</button></td>
+        </tr>`).join("")}
+      </tbody>
+      <tfoot><tr class="border-t bg-slate-50 font-semibold">
+        <td class="px-3 py-1.5" colspan="4">合計 ${rows.length} 張發票</td>
+        <td class="px-3 py-1.5 text-right">${finMoney(total)}</td><td></td>
+      </tr></tfoot>
+    </table>`;
+}
+
 function finRenderLedger() {
   const ctx = finReconContext();
   const d = finLedgerDraft, f = finLedgerFilter;
@@ -496,6 +528,14 @@ function finRenderLedger() {
         <label class="text-xs text-slate-500">手續費（選填）</label>
         <input id="led-fee" type="number" min="0" step="1" class="w-full border rounded-lg px-3 py-2 text-sm mt-1"/>
       </div>
+    </div>
+    <div class="mb-3">
+      <label class="text-xs text-slate-500" for="led-new-inv">發票號碼（選填，一筆流水可加入多張發票，金額自動加總）</label>
+      <div class="flex gap-2 mt-1 max-w-xl">
+        <input id="led-new-inv" list="${d.type === "income" ? "led-inv-sales" : "led-inv-purchase"}" autocomplete="off" class="flex-1 border rounded-lg px-3 py-2 text-sm font-mono" placeholder="KEY 發票號碼後按 Enter"/>
+        <button id="led-new-inv-add" type="button" class="border rounded-lg text-sm px-3 py-2 hover:bg-slate-100 whitespace-nowrap">＋ 加入發票</button>
+      </div>
+      <div id="led-new-inv-list">${finNewEntryInvListHtml()}</div>
     </div>
     <div class="mb-3">
       <label class="text-xs text-slate-500">備註（選填）</label>
@@ -579,13 +619,13 @@ function finRenderLedger() {
   </div>
 
   <div class="bg-white rounded-xl shadow-sm overflow-x-auto">
-    <table class="w-full text-sm">
+    <table class="grid-table w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
         <tr><th class="px-3 py-2"><input type="checkbox" id="led-sel-all" ${allSelected ? "checked" : ""}/></th><th class="px-3 py-2 whitespace-nowrap">匯款編號</th><th class="px-3 py-2 whitespace-nowrap">匯款日期</th><th class="px-3 py-2">項目類別</th><th class="px-3 py-2" style="min-width: 9rem">內容</th><th class="px-3 py-2" style="min-width: 10rem">發票號碼</th><th class="px-3 py-2 text-right whitespace-nowrap">銷項（支出）</th><th class="px-3 py-2 text-right whitespace-nowrap">進項（收入）</th><th class="px-3 py-2 text-right whitespace-nowrap">互匯未實際扣</th><th class="px-3 py-2 text-right whitespace-nowrap">手續費</th><th class="px-3 py-2" style="min-width: 5rem">備註</th><th class="px-3 py-2" style="min-width: 7rem">收款方</th><th class="px-3 py-2 whitespace-nowrap">核對</th><th class="px-3 py-2 sticky right-0 bg-slate-100"></th></tr>
       </thead>
       <tbody>
-        ${pageRows.map(e => { const rs = finReconStatus(e, ctx); const nums = (e.allocations || []).map(a => invById[a.invoiceId]?.number).filter(Boolean); const transfer = finIsTransfer(e); const splits = e.splits || []; const splitOpen = finLedgerExpanded.has(e.id); return `
-          <tr class="border-t hover:bg-slate-50 ${!e.category && !transfer ? "bg-amber-50/40" : ""}" data-row-id="${finEsc(e.id)}">
+        ${pageRows.map((e, n) => { const isEdit = finLedgerEditId === e.id; const rs = finReconStatus(e, ctx); const nums = (e.allocations || []).map(a => invById[a.invoiceId]?.number).filter(Boolean); const transfer = finIsTransfer(e); const splits = e.splits || []; const splitOpen = finLedgerExpanded.has(e.id); return `
+          <tr class="data-row ${n % 2 ? "row-alt" : ""} ${!e.category && !transfer ? "row-warn" : ""} ${isEdit ? "row-editing" : ""}" data-row-id="${finEsc(e.id)}">
             <td class="px-3 py-2"><input type="checkbox" class="led-sel" data-id="${finEsc(e.id)}" ${finLedgerSel.has(e.id) ? "checked" : ""}/></td>
             <td class="px-3 py-2 whitespace-nowrap"><div class="font-mono">${finEsc(e.no) || `<span class="text-slate-300">-</span>`}</div>${f.account ? "" : `<div class="text-[11px] text-slate-400">${finEsc(finAccountName(e.accountId))}</div>`}</td>
             <td class="px-3 py-2 text-slate-500 whitespace-nowrap" title="${finEsc(e.date)}">${finEsc(finShortDate(e.date))}</td>
@@ -623,7 +663,8 @@ function finRenderLedger() {
               <button data-id="${finEsc(e.id)}" class="led-del-btn text-rose-500 hover:underline text-xs">刪除</button>
             </td>
           </tr>
-          ${splits.length ? `<tr class="${splitOpen ? "" : "hidden"} bg-slate-50"><td colspan="14" class="px-3 py-2">${finSplitDetailHtml(e)}</td></tr>` : ""}`; }).join("") || `<tr><td colspan="14" class="px-4 py-8 text-center text-slate-400">沒有符合條件的流水</td></tr>`}
+          ${splits.length ? `<tr class="${splitOpen ? "" : "hidden"} detail-row"><td colspan="14" class="px-3 py-2">${finSplitDetailHtml(e)}</td></tr>` : ""}
+          ${isEdit ? `<tr class="edit-row"><td colspan="14" class="px-4 py-4"><div class="inline-edit-box sticky left-0"><p class="font-semibold text-sm text-slate-700 mb-3">編輯流水：${finEsc(e.no) || finEsc(e.date)}</p>${finEntryEditFormHtml(e)}</div></td></tr>` : ""}`; }).join("") || `<tr><td colspan="14" class="px-4 py-8 text-center text-slate-400">沒有符合條件的流水</td></tr>`}
       </tbody>
       ${rows.length ? `
       <tfoot class="bg-slate-50 border-t-2 font-semibold">
@@ -654,8 +695,49 @@ function finBindLedger() {
   $("led-type").onchange = () => {
     finLedgerDraft.type = $("led-type").value;
     $("led-category").innerHTML = finCategoryOptions(finLedgerDraft.type, "", "請選擇");
+    // 支出對進項發票、收入對銷項發票：換了就清掉已加入的發票
+    finLedgerDraft.invIds = [];
+    $("led-new-inv").setAttribute("list", finLedgerDraft.type === "income" ? "led-inv-sales" : "led-inv-purchase");
+    refreshNewInvs();
     updateJudge();
   };
+  // ---- 新增流水：加入多張發票，金額自動加總（自己改過金額就不再覆蓋） ----
+  let amountTouched = false;
+  $("led-amount").addEventListener("input", () => { amountTouched = $("led-amount").value !== ""; });
+  const refreshNewInvs = () => {
+    $("led-new-inv-list").innerHTML = finNewEntryInvListHtml();
+    const rows = finNewEntryInvs();
+    if (!amountTouched) $("led-amount").value = rows.length ? rows.reduce((s, r) => s + r.remaining, 0) : "";
+    const only = pick => { const v = [...new Set(rows.map(r => pick(r.inv)).filter(x => x && x !== "-"))]; return v.length === 1 ? v[0] : ""; };
+    // 收款方、類別空白時，所有發票同一個廠商／類別就帶入
+    if (rows.length && !$("led-party").value.trim() && only(finPartyName)) { $("led-party").value = only(finPartyName); updateJudge(); }
+    const cat = only(i => i.category);
+    if (rows.length && !$("led-category").value && cat && [...$("led-category").options].some(o => o.value === cat)) { $("led-category").value = cat; updateJudge(); }
+    document.querySelectorAll(".led-new-inv-del").forEach(b => {
+      b.onclick = () => { finLedgerDraft.invIds = (finLedgerDraft.invIds || []).filter(id => id !== b.dataset.id); refreshNewInvs(); };
+    });
+  };
+  const addNewInv = () => {
+    const fail = msg => showMsg("led-msg", msg, true);
+    const raw = $("led-new-inv").value.trim();
+    const key = finNormInvNo(raw);
+    if (!key) return;
+    const kind = $("led-type").value === "income" ? "sales" : "purchase";
+    const ids = finLedgerDraft.invIds = finLedgerDraft.invIds || [];
+    const st = finSettlement();
+    const exact = db.finance.invoices.filter(i => i.kind === kind && finNormInvNo(i.number) === key);
+    if (!exact.length) return fail(`找不到${kind === "sales" ? "銷項" : "進項"}發票「${raw}」。請確認號碼，或先到${kind === "sales" ? "應收帳款" : "發票登錄"}登錄這張發票。`);
+    const pick = exact.find(i => !ids.includes(i.id) && st[i.id].linkRemaining > 0);
+    if (!pick) return fail(exact.some(i => ids.includes(i.id)) ? `發票「${raw}」已經加入了` : `發票「${raw}」已經對帳完畢，沒有待對帳金額`);
+    if (kind === "sales" && ids.some(id => db.finance.invoices.find(i => i.id === id)?.clientId !== pick.clientId)) return fail("一筆入帳只能核對同一個客戶的發票");
+    ids.push(pick.id);
+    $("led-new-inv").value = "";
+    $("led-msg").classList.add("hidden");
+    refreshNewInvs();
+    $("led-new-inv").focus();
+  };
+  $("led-new-inv-add").onclick = addNewInv;
+  $("led-new-inv").onkeydown = ev => { if (ev.key === "Enter") { ev.preventDefault(); addNewInv(); } };
   // 自動判定：手續費自動帶入，手動改過就不再覆蓋
   let feeTouched = false;
   const formJudge = () => finJudgeManual({ accountId: $("led-account").value, type: $("led-type").value, party: $("led-party").value.trim(), content: $("led-content").value.trim(), category: $("led-category").value });
@@ -677,6 +759,7 @@ function finBindLedger() {
   $("led-category").onchange = updateJudge;
   $("led-date").onchange = () => { finLedgerDraft.date = $("led-date").value; };
   $("led-account").onchange = () => { finLedgerDraft.accountId = $("led-account").value; updateJudge(); };
+  if ((finLedgerDraft.invIds || []).length) refreshNewInvs();   // 重繪後把金額帶回來
   $("led-add-btn").onclick = () => {
     const accountId = $("led-account").value, date = $("led-date").value, type = $("led-type").value;
     const category = $("led-category").value.trim();
@@ -685,8 +768,10 @@ function finBindLedger() {
     if (!accountId) return fail("請選擇帳戶");
     if (!date) return fail("請選擇日期");
     const judged = formJudge();
+    const invRows = finNewEntryInvs();
     if (judged.kind === "transfer") {
       // 內部轉帳：兩邊帳戶各記一筆，都放在「互匯未實際扣」
+      if (invRows.length) return fail("判定為公司內部轉帳，不能連結發票。請移除發票，或選擇項目類別。");
       if (amount === null) return fail("金額請輸入大於 0 的整數");
       const out = type === "expense";
       const from = out ? accountId : judged.target.id, to = out ? judged.target.id : accountId;
@@ -701,9 +786,16 @@ function finBindLedger() {
     if (amount === null) return fail("金額請輸入大於 0 的整數");
     const fee = finParseFee($("led-fee").value);
     if (fee === null) return fail("手續費請輸入 0 或正整數");
-    db.finance.ledger.push({ id: finId("led"), seq: finNextSeq(), accountId, date, type, category, amount, fee, counterparty: $("led-party").value.trim(), content: $("led-content").value.trim(), note: $("led-note").value.trim(), allocations: [], source: "manual" });
+    // 加入的發票依序分配金額（每張最多分到它的待對帳金額）
+    const allocations = [];
+    let left = amount;
+    invRows.forEach(({ inv, remaining }) => { const a = Math.min(left, remaining); if (a > 0) { allocations.push({ invoiceId: inv.id, amount: a }); left -= a; } });
+    const entry = { id: finId("led"), seq: finNextSeq(), accountId, date, type, category, amount, fee, counterparty: $("led-party").value.trim(), content: $("led-content").value.trim(), note: $("led-note").value.trim(), allocations, source: "manual" };
+    if (type === "income" && invRows.length) entry.clientId = invRows[0].inv.clientId;
+    db.finance.ledger.push(entry);
     finLedgerDraft = { accountId, type, date };
     finSave();
+    if (allocations.length) finSyncCategories([entry], "link");
   };
   $("tr-add-btn").onclick = () => {
     const date = $("tr-date").value, from = $("tr-from").value, to = $("tr-to").value;
@@ -857,7 +949,15 @@ function finBindLedger() {
       b.setAttribute("aria-expanded", String(open));
     };
   });
-  document.querySelectorAll(".led-edit-btn").forEach(b => { b.onclick = () => navigateTo({ page: "fin-entry-edit", finEntryId: b.dataset.id }); });
+  // 編輯：在清單那一列下方展開表單（再按一次收起）
+  document.querySelectorAll(".led-edit-btn").forEach(b => { b.onclick = () => {
+    finLedgerEditId = finLedgerEditId === b.dataset.id ? "" : b.dataset.id;
+    render();
+    if (finLedgerEditId) document.querySelector(`[data-row-id="${CSS.escape(finLedgerEditId)}"]`)?.scrollIntoView({ block: "start" });
+  }; });
+  const editing = db.finance.ledger.find(x => x.id === finLedgerEditId);
+  if (editing && document.getElementById("ee-save-btn")) finBindEntryEdit(editing, () => { finLedgerEditId = ""; scrollToRowId = editing.id; render(); });
+  finFitInlineEditBoxes();
   document.querySelectorAll(".led-del-btn").forEach(b => {
     b.onclick = () => {
       const e = db.finance.ledger.find(x => x.id === b.dataset.id);
@@ -878,10 +978,12 @@ function finBindLedger() {
 function finRenderEntryEdit() {
   const e = db.finance.ledger.find(x => x.id === view.finEntryId);
   if (!e) return `<p class="text-slate-400">找不到這筆流水</p>`;
-  const ctx = finReconContext();
-  const rs = finReconStatus(e, ctx);
+  return `<div class="bg-white rounded-xl shadow-sm p-6 max-w-3xl">${finEntryEditFormHtml(e)}</div>`;
+}
+// 編輯流水的表單：獨立頁面和流水帳清單裡展開編輯共用
+function finEntryEditFormHtml(e) {
+  const rs = finReconStatus(e, finReconContext());
   return `
-  <div class="bg-white rounded-xl shadow-sm p-6 max-w-3xl">
     <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
       <div><label class="text-xs text-slate-500">日期</label><input id="ee-date" type="date" value="${finEsc(e.date)}" class="w-full border rounded-lg px-3 py-2 text-sm mt-1"/></div>
       <div><label class="text-xs text-slate-500">帳戶</label><select id="ee-account" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">${db.finance.accounts.map(a => `<option value="${finEsc(a.id)}" ${a.id === e.accountId ? "selected" : ""}>${finEsc(a.name)}</option>`).join("")}</select></div>
@@ -900,14 +1002,16 @@ function finRenderEntryEdit() {
     <button id="ee-save-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">儲存</button>
     <button id="ee-cancel-btn" class="border rounded-lg px-4 py-2 text-sm hover:bg-slate-100 ml-2">取消</button>
     <p id="ee-msg" class="text-xs hidden mt-2"></p>
-  </div>`;
+`;
 }
-function finBindEntryEdit() {
+// done：儲存或取消後要做的事（獨立頁面是回上一頁，清單裡展開的是收起來）
+function finBindEntryEdit(entry, done) {
   const $ = id => document.getElementById(id);
-  const e = db.finance.ledger.find(x => x.id === view.finEntryId);
+  const e = entry || db.finance.ledger.find(x => x.id === view.finEntryId);
   if (!e) return;
+  const finish = done || (() => { scrollToRowId = e.id; goBack(); });
   $("ee-type").onchange = () => { $("ee-category").innerHTML = finCategoryOptions($("ee-type").value, $("ee-category").value); };
-  $("ee-cancel-btn").onclick = goBack;
+  $("ee-cancel-btn").onclick = () => finish();
   $("ee-save-btn").onclick = () => {
     const fail = msg => showMsg("ee-msg", msg, true);
     const date = $("ee-date").value, type = $("ee-type").value, amount = finParseAmount($("ee-amount").value, false);
@@ -924,7 +1028,7 @@ function finBindEntryEdit() {
     const categoryChanged = (e.category || "") !== $("ee-category").value.trim();
     Object.assign(e, { date, accountId: $("ee-account").value, type, category: $("ee-category").value.trim(), amount, fee, counterparty: $("ee-party").value.trim(), content: $("ee-content").value.trim(), note: $("ee-note").value.trim() });
     saveDB(db);
-    scrollToRowId = e.id; goBack();
+    finish();
     if (categoryChanged) finSyncCategories([e], "ledger");
   };
 }
@@ -1019,6 +1123,79 @@ function finSplitRow(r, idx) {
     </div>
   </div>`;
 }
+// Excel 複製出來的文字：Tab 分欄、換行分列；儲存格裡有換行時 Excel 會用雙引號包起來
+function finParseTSV(text) {
+  const rows = [];
+  let row = [], cell = "", quoted = false;
+  const s = String(text || "").replace(/\r\n?/g, "\n");
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quoted) {
+      if (ch === '"' && s[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+    } else if (ch === '"' && cell.trim() === "") { quoted = true; cell = ""; }
+    else if (ch === "\t") { row.push(cell); cell = ""; }
+    else if (ch === "\n") { row.push(cell); rows.push(row); row = []; cell = ""; }
+    else cell += ch;
+  }
+  row.push(cell); rows.push(row);
+  return rows.map(r => r.map(c => c.trim())).filter(r => r.some(Boolean));
+}
+// 公司原本的帳戶紀錄（每列：匯款編號、日期、類別、收款方、品項、單號、發票號碼、金額）轉成拆分明細列
+// 欄位不足 8 欄時，改用內容判斷：金額、類別、發票號碼、日期各自認得出來，其餘文字依序當品項和備註
+function finParseSplitPaste(text, e) {
+  const money = v => { const m = String(v).replace(/[$,\s元NT]/g, ""); return /^-?\d+(\.\d+)?$/.test(m) ? Math.round(Number(m)) : null; };
+  const isInvNo = v => /^[A-Z]{2}-?\d{8}$/i.test(v);
+  const isEntryNo = v => /^[A-Z]\d{4,}$/i.test(v);
+  const year = e.year || (e.date || todayISO()).slice(0, 4);
+  const toDate = v => {
+    let m = String(v).match(/^(\d{1,2})月(\d{1,2})日$/);
+    if (m) return `${year}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
+    m = String(v).match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+    return m ? `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}` : "";
+  };
+  const cats = new Set([...FIN_EXPENSE_CATEGORIES, ...FIN_INCOME_CATEGORIES]);
+  let entryNo = "", curNo = "", prevPayee = "", prevDate = e.date || "";
+  const out = [];
+  finParseTSV(text).forEach(c => {
+    let no = "", date = "", category = "", payee = "", item = "", ref = "", voucher = "", amount = null;
+    if (c.length >= 8) {
+      [no, date, category, payee, item, ref, voucher] = c;
+      amount = money(c[7]);
+      date = toDate(date);
+    } else {
+      const rest = [];
+      const amtIdx = c.map(money).reduce((last, x, i) => (x !== null ? i : last), -1);   // 最後一個是數字的欄位當金額
+      c.forEach((v, i) => {
+        if (!v) return;
+        if (i === amtIdx) amount = money(v);
+        else if (!no && i === 0 && isEntryNo(v)) no = v;
+        else if (!date && toDate(v)) date = toDate(v);
+        else if (!category && cats.has(v)) category = v;
+        else if (!voucher && (isInvNo(v) || v === "收據")) voucher = v;
+        else rest.push(v);
+      });
+      [item = "", ...ref] = rest;
+      ref = ref.join(" ");
+    }
+    if (amount === null || amount <= 0) return;
+    if (no && isEntryNo(no)) { curNo = no.toUpperCase(); if (!entryNo) entryNo = curNo; }   // 編號空白的列屬於上一個編號
+    payee = payee || prevPayee; prevPayee = payee;
+    date = date || prevDate; prevDate = date;
+    const v = String(voucher || "").trim();
+    let voucherType = "其他", number = "", vNote = "";
+    if (isInvNo(v)) { voucherType = "電子發票"; number = v.toUpperCase(); }
+    else if (v === "收據") voucherType = "收據";
+    else if (v) vNote = `憑證：${v.split(/\n+/).map(x => x.trim()).filter(Boolean).join("、")}`;
+    const taxed = finSplitIsTaxed(voucherType);
+    const net = taxed ? Math.round(amount / (1 + FIN_TAX_RATE)) : amount;
+    out.push({ date, voucherType, number, vendor: "", payee, category: cats.has(category) ? category : "", project: "",
+      item: item + (category && !cats.has(category) ? `（${category}）` : ""), net: String(net), tax: String(amount - net), amount: String(amount),
+      note: [ref, vNote].filter(Boolean).join(" "), taxTouched: false, entryNo: curNo, isFee: category === "手續費" });
+  });
+  return { rows: out, entryNo };
+}
 function finRenderEntrySplit() {
   const e = db.finance.ledger.find(x => x.id === view.finEntryId);
   if (!e) return `<p class="text-slate-400">找不到這筆流水</p>`;
@@ -1051,6 +1228,15 @@ function finRenderEntrySplit() {
     <datalist id="sp-project-list">${opts(projects)}</datalist>
     <div id="sp-rows" class="bg-slate-50 rounded-lg p-2">${finSplitDraft.rows.map(finSplitRow).join("")}</div>
     <button type="button" id="sp-add" class="text-sm text-blue-600 hover:underline mt-2">＋ 新增一筆</button>
+    <details class="mt-3 border rounded-lg px-3 py-2 bg-slate-50">
+      <summary class="text-sm text-slate-600 cursor-pointer">📋 從 Excel 貼上（公司原本的帳戶紀錄）</summary>
+      <p class="text-xs text-slate-500 mt-2">在 Excel 選取那筆匯款的明細列（編號、日期、類別、收款方、品項、單號、發票號碼、金額）複製後貼在下面。收款方、日期空白的會沿用上一列；發票號碼像 EP-16249898 的會記成電子發票，「收據」記成收據，其他文字放到備註。</p>
+      <textarea id="sp-paste" rows="5" class="w-full border rounded-lg px-3 py-2 text-xs font-mono mt-2" placeholder="在這裡貼上（Ctrl+V）"></textarea>
+      <div class="flex items-center gap-3 mt-2">
+        <button type="button" id="sp-paste-apply" class="border rounded-lg text-sm px-3 py-1.5 bg-white hover:bg-slate-100">轉成拆分明細</button>
+        <span id="sp-paste-msg" class="text-xs" role="status"></span>
+      </div>
+    </details>
     <p class="text-sm mt-3">流水金額 <b>${finMoney(e.amount)}</b>${allocated ? `　｜　已核對發票 <b>${finMoney(allocated)}</b>` : ""}　｜　已拆分 <b id="sp-total">0</b>　｜　未拆分 <b id="sp-rest">0</b></p>
     <div class="mt-4">
       <button id="sp-save-btn" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">儲存拆分</button>
@@ -1120,6 +1306,20 @@ function finBindEntrySplit() {
     d.rows.push(finSplitBlankRow(e, d.rows[d.rows.length - 1]));
     paint();
     box.querySelector(".sp-row:last-child [data-field='payee']").focus();
+  };
+  // 從 Excel 貼上：一列變一筆拆分，加在現有明細後面（原本空白的列會被取代），確認後再按「儲存拆分」
+  $("sp-paste-apply").onclick = () => {
+    const msg = $("sp-paste-msg");
+    const { rows, entryNo } = finParseSplitPaste($("sp-paste").value, e);
+    if (!rows.length) { msg.className = "text-xs text-rose-600"; msg.textContent = "沒有讀到含金額的明細列，請確認複製的範圍"; return; }
+    const blank = r => !["number", "vendor", "payee", "item", "net", "amount", "note"].some(k => String(r[k] ?? "").trim());
+    d.rows = [...d.rows.filter(r => !blank(r)), ...rows];
+    paint();
+    const sum = rows.reduce((s, r) => s + num(r.amount), 0);
+    const warn = entryNo && e.no && entryNo !== e.no ? `注意：貼上的編號是 ${entryNo}，這筆流水是 ${e.no}。` : "";
+    msg.className = `text-xs ${warn ? "text-amber-600" : "text-emerald-700"}`;
+    msg.textContent = `${warn}已加入 ${rows.length} 筆，合計 ${finMoney(sum)}。請檢查後按「儲存拆分」。`;
+    $("sp-paste").value = "";
   };
   $("sp-cancel-btn").onclick = () => { finSplitDraft = null; goBack(); };
   $("sp-save-btn").onclick = () => {

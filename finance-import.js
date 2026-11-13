@@ -315,3 +315,181 @@ function finBindInvImport(mode) {
     finSave();
   });
 }
+
+// ============================================================
+// 從公司原本的帳戶紀錄貼上（一筆匯款付很多張發票）
+// ============================================================
+// 每列：匯款編號、日期、類別、收款方、品項、單號、發票號碼、金額（欄位解析跟拆分頁的貼上共用 finParseSplitPaste）。
+// 每一列登錄成一張進項發票，支出單號填匯款編號 → 存檔時自動連到那筆流水（data.js autoLinkByExpenseNo），不用拆分。
+// 「手續費」列不登錄成發票，加到流水的手續費欄：
+//   - 流水金額 = 這筆匯款全部列的合計（金額含手續費）→ 流水金額扣掉手續費，手續費另外記
+//   - 流水金額 = 扣掉手續費後的合計 → 只記手續費
+//   - 其他情況（流水還沒建、已經有手續費、金額對不上）→ 手續費也登錄成發票（類別「手續費」），不動流水
+let finAcctPaste = { open: false, text: "", year: String(new Date().getFullYear()), rows: null, msg: "", last: null };
+
+function finAcctPastePlan(rows) {
+  const norm = s => String(s || "").toUpperCase().replace(/[\s-]/g, "");
+  const groups = [];
+  rows.forEach(r => {
+    let g = groups.find(x => x.no === r.entryNo);
+    if (!g) groups.push(g = { no: r.entryNo, rows: [] });
+    g.rows.push(r);
+  });
+  const existingByNo = {};
+  db.finance.invoices.filter(i => i.kind === "purchase" && i.number).forEach(i => { existingByNo[norm(i.number)] = i; });
+  const linkedIds = new Set(finLedgerLinks(db.finance).map(l => l.invoiceId));
+  groups.forEach(g => {
+    g.entry = g.no ? db.finance.ledger.find(e => (e.no || "").toUpperCase() === g.no) : null;
+    const amt = r => Number(r.amount) || 0;
+    g.total = g.rows.reduce((s, r) => s + amt(r), 0);
+    g.feeSum = g.rows.filter(r => r.isFee).reduce((s, r) => s + amt(r), 0);
+    const e = g.entry;
+    g.feeMode = !g.feeSum ? "" : e && !e.fee && e.type === "expense" && e.amount === g.total ? "includes"
+      : e && !e.fee && e.type === "expense" && e.amount === g.total - g.feeSum ? "feeOnly" : "invoice";
+    g.rows.forEach(r => {
+      if (r.isFee && g.feeMode !== "invoice") { r.action = "fee"; return; }
+      const same = r.number && existingByNo[norm(r.number)];
+      if (same) {
+        r.existing = same;
+        const sameNo = g.no && String(same.expenseNo || "").toUpperCase().split(/[、,\s]+/).includes(g.no);
+        r.action = sameNo ? "sameNo" : !same.expenseNo && !linkedIds.has(same.id) && g.no ? "fillNo" : "skip";
+        return;
+      }
+      // 沒有號碼的（收據、其他）用支出單號＋日期＋品項＋金額判斷是不是已經貼過
+      const dup = !r.number && g.no && db.finance.invoices.some(i => i.kind === "purchase" && (i.expenseNo || "").toUpperCase().includes(g.no) && i.total === amt(r) && i.date === r.date && ((i.items || [])[0]?.name || "") === r.item);
+      r.action = dup ? "dup" : "new";
+    });
+  });
+  return groups;
+}
+function finRenderAcctPaste() {
+  const st = finAcctPaste;
+  const plan = st.rows ? finAcctPastePlan(st.rows) : [];
+  const actionLabel = { new: `<span class="text-emerald-700">登錄發票</span>`, fee: `<span class="text-sky-700">記到流水手續費</span>`, fillNo: `<span class="text-emerald-700">已登錄，補上支出單號</span>`, sameNo: `<span class="text-slate-500">已登錄（支出單號相同，一起連結）</span>`, skip: `<span class="text-slate-400">已登錄，略過</span>`, dup: `<span class="text-slate-400">可能重複，略過</span>` };
+  const groupNote = g => {
+    const e = g.entry;
+    const head = g.no ? `<b class="font-mono">${finEsc(g.no)}</b>` : `<b>（沒有匯款編號）</b>`;
+    const link = !g.no ? "只登錄發票，不連結流水" : e ? `會自動連到流水 ${finEsc(e.no)}（${finEsc(e.date)}，金額 ${finMoney(e.amount)}）` : `流水帳還沒有 ${finEsc(g.no)}，發票先登錄，之後新增或匯入這筆流水時自動連結`;
+    const fee = g.feeMode === "includes" ? `；手續費 ${finMoney(g.feeSum)} 記到流水手續費欄，流水金額改為 ${finMoney(e.amount - g.feeSum)}`
+      : g.feeMode === "feeOnly" ? `；手續費 ${finMoney(g.feeSum)} 記到流水手續費欄`
+      : g.feeSum ? `；手續費 ${finMoney(g.feeSum)} 登錄成發票（類別「手續費」）${e && e.fee ? "，因為流水已經有手續費" : e ? "，因為流水金額對不上" : ""}` : "";
+    const diff = e && g.feeMode !== "includes" ? e.amount - (g.total - (g.feeMode === "feeOnly" ? g.feeSum : 0)) : 0;
+    return `<p class="text-sm mt-3 mb-1">${head}：${g.rows.length} 列，合計 ${finMoney(g.total)}。${link}${fee}${diff ? `<span class="text-amber-600">（和流水金額差 ${finMoney(diff)}）</span>` : ""}${e && g.rows[0].date && e.date !== g.rows[0].date ? `<span class="text-amber-600">（流水日期 ${finEsc(e.date)} 和紀錄日期 ${finEsc(g.rows[0].date)} 不同，請確認編號是同一筆）</span>` : ""}</p>`;
+  };
+  return `
+  <div class="bg-white rounded-xl shadow-sm ${st.open ? "p-6" : "px-6 py-3"} mb-6">
+    <button type="button" id="ap-toggle" class="w-full flex items-center justify-between text-left font-semibold text-sm text-slate-700" aria-expanded="${st.open}">
+      <span>📋 從帳戶紀錄貼上（一筆匯款付很多張發票）</span>
+      <span class="text-xs font-normal text-slate-500">${st.open ? "▾ 收起" : "▸ 展開"}</span>
+    </button>
+    ${st.last ? `<div class="flex flex-wrap items-center gap-3 text-sm bg-slate-50 text-slate-700 border rounded-lg px-3 py-2 mt-3"><span>${finEsc(st.last.label)}</span><button id="ap-undo" class="text-xs text-rose-600 hover:underline">復原這次貼上</button></div>` : ""}
+    ${!st.open ? "" : `
+    <p class="text-xs text-slate-500 mt-3">在 Excel 選取帳戶紀錄（匯款編號、日期、類別、收款方、品項、單號、發票號碼、金額）複製後貼上，可以一次貼很多筆匯款。
+      每一列登錄成一張發票，支出單號填匯款編號，<b>自動連到那筆流水，不用拆分</b>。編號、日期、收款方空白的列沿用上一列。</p>
+    <div class="flex flex-wrap items-end gap-3 mt-3">
+      <label class="text-xs text-slate-500">日期年份（帳戶紀錄只寫月日時用）
+        <input id="ap-year" type="number" min="2000" max="2100" value="${finEsc(st.year)}" class="block border rounded-lg px-3 py-1.5 text-sm mt-1 w-28"/>
+      </label>
+    </div>
+    <textarea id="ap-text" rows="5" class="w-full border rounded-lg px-3 py-2 text-xs font-mono mt-3" placeholder="在這裡貼上（Ctrl+V）">${finEsc(st.text)}</textarea>
+    <div class="flex items-center gap-3 mt-2">
+      <button type="button" id="ap-preview" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">預覽</button>
+      ${st.msg ? `<span class="text-xs text-rose-600">${finEsc(st.msg)}</span>` : ""}
+    </div>
+    ${plan.length ? `
+    ${plan.map(g => `${groupNote(g)}
+    <div class="overflow-x-auto border rounded-lg">
+      <table class="grid-table w-full text-sm">
+        <thead class="bg-slate-100 text-slate-600 text-left"><tr>
+          <th class="px-3 py-1.5">日期</th><th class="px-3 py-1.5">類別</th><th class="px-3 py-1.5">收款方</th><th class="px-3 py-1.5">品項</th><th class="px-3 py-1.5">憑證</th><th class="px-3 py-1.5">發票號碼</th><th class="px-3 py-1.5 text-right">含稅總額</th><th class="px-3 py-1.5">備註</th><th class="px-3 py-1.5">處理方式</th>
+        </tr></thead>
+        <tbody>${g.rows.map((r, n) => `
+          <tr class="data-row ${n % 2 ? "row-alt" : ""}">
+            <td class="px-3 py-1.5 whitespace-nowrap text-slate-500">${finEsc(r.date)}</td>
+            <td class="px-3 py-1.5 whitespace-nowrap">${finEsc(r.category) || `<span class="text-amber-600">未分類</span>`}</td>
+            <td class="px-3 py-1.5">${finEsc(r.payee)}</td>
+            <td class="px-3 py-1.5">${finEsc(r.item)}</td>
+            <td class="px-3 py-1.5 whitespace-nowrap">${finEsc(r.voucherType)}</td>
+            <td class="px-3 py-1.5 font-mono whitespace-nowrap">${finEsc(r.number)}</td>
+            <td class="px-3 py-1.5 text-right whitespace-nowrap">${finMoney(Number(r.amount))}</td>
+            <td class="px-3 py-1.5 text-slate-500">${finEsc(r.note)}</td>
+            <td class="px-3 py-1.5 whitespace-nowrap">${actionLabel[r.action]}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>`).join("")}
+    <div class="flex items-center gap-2 mt-4">
+      <button type="button" id="ap-go" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700">確認登錄</button>
+      <button type="button" id="ap-cancel" class="border rounded-lg px-4 py-2 text-sm hover:bg-slate-100">取消</button>
+    </div>` : ""}`}
+  </div>`;
+}
+function finBindAcctPaste() {
+  const st = finAcctPaste;
+  const $ = id => document.getElementById(id);
+  if (!$("ap-toggle")) return;
+  $("ap-toggle").onclick = () => { st.open = !st.open; finRenderKeepScroll(); };
+  $("ap-text")?.addEventListener("input", () => { st.text = $("ap-text").value; });
+  $("ap-year")?.addEventListener("input", () => { st.year = $("ap-year").value; });
+  $("ap-preview")?.addEventListener("click", () => {
+    st.text = $("ap-text").value;
+    const year = /^\d{4}$/.test(st.year) ? st.year : String(new Date().getFullYear());
+    const { rows } = finParseSplitPaste(st.text, { year, date: "" });
+    st.rows = rows.length ? rows : null;
+    st.msg = rows.length ? "" : "沒有讀到含金額的明細列，請確認複製的範圍";
+    finRenderKeepScroll();
+  });
+  $("ap-cancel")?.addEventListener("click", () => { Object.assign(st, { text: "", rows: null, msg: "" }); finRenderKeepScroll(); });
+  $("ap-go")?.addEventListener("click", () => {
+    const plan = finAcctPastePlan(st.rows || []);
+    const batch = finId("apb");
+    const undo = { batch, filled: [], fees: [] };
+    let created = 0, filled = 0, feeTotal = 0;
+    plan.forEach(g => {
+      g.rows.forEach(r => {
+        if (r.action === "fillNo") { r.existing.expenseNo = g.no; undo.filled.push(r.existing.id); filled++; return; }
+        if (r.action !== "new") return;
+        const net = Number(r.net) || 0, tax = Number(r.tax) || 0;
+        db.finance.invoices.push({
+          id: finId("inv"), kind: "purchase", date: r.date || todayISO(), number: r.number, voucherType: r.voucherType,
+          taxType: tax > 0 || finSplitIsTaxed(r.voucherType) ? "taxable" : "zero",
+          items: r.item ? [{ name: r.item, qty: 1, price: net, amount: net }] : [],
+          amount: net, tax, total: net + tax, note: r.note, clientId: "", vendor: "", category: r.category, project: "",
+          payee: r.payee, payMethod: FIN_PAY_UNPAID, payDate: "", expenseNo: g.no, importBatch: batch,
+        });
+        created++;
+      });
+      if (g.feeMode === "includes" || g.feeMode === "feeOnly") {
+        undo.fees.push({ entryId: g.entry.id, amount: g.entry.amount, fee: g.entry.fee || 0 });
+        if (g.feeMode === "includes") g.entry.amount -= g.feeSum;
+        g.entry.fee = g.feeSum;
+        feeTotal += g.feeSum;
+      }
+    });
+    saveDB(db);   // 存檔時依支出單號自動連到流水
+    const ids = new Set(db.finance.invoices.filter(i => i.importBatch === batch).map(i => i.id).concat(undo.filled));
+    const linkedNow = new Set(finLedgerLinks(db.finance).filter(l => ids.has(l.invoiceId)).map(l => l.invoiceId)).size;
+    st.last = { ...undo, label: `已登錄 ${created} 張發票${filled ? `、補上 ${filled} 張的支出單號` : ""}${feeTotal ? `、手續費 ${finMoney(feeTotal)} 記到流水` : ""}；其中 ${linkedNow} 張已自動連到流水（${todayISO()}）` };
+    Object.assign(st, { text: "", rows: null, msg: "" });
+    render();
+  });
+  $("ap-undo")?.addEventListener("click", () => {
+    const u = st.last;
+    appConfirm("確定要復原這次貼上嗎？這次登錄的發票會刪除（連同和流水的連結），補上的支出單號會清掉，手續費改回原本。", () => {
+      const ids = new Set(db.finance.invoices.filter(i => i.importBatch === u.batch).map(i => i.id));
+      const touched = new Set([...ids, ...u.filled]);
+      db.finance.ledger.forEach(e => { if ((e.allocations || []).some(a => touched.has(a.invoiceId))) e.allocations = e.allocations.filter(a => !touched.has(a.invoiceId)); });
+      db.finance.invoices = db.finance.invoices.filter(i => !ids.has(i.id));
+      u.filled.forEach(id => {
+        const inv = db.finance.invoices.find(i => i.id === id);
+        if (!inv) return;
+        inv.expenseNo = "";
+        delete inv.autoLinkedEntry; delete inv.autoLinkSkip;
+        if (inv.prePay) inv.prePay.expenseNo = "";
+      });
+      u.fees.forEach(f => { const e = db.finance.ledger.find(x => x.id === f.entryId); if (e) { e.amount = f.amount; e.fee = f.fee; } });
+      st.last = null;
+      finSave();
+    }, { okLabel: "復原", danger: true });
+  });
+}
