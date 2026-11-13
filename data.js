@@ -177,6 +177,7 @@ function syncInvoicePayments(f) {
   const pays = {};
   finLedgerLinks(f).forEach(l => { (pays[l.invoiceId] = pays[l.invoiceId] || []).push(l); });
   syncLinkedVendorsAndCategories(f);
+  syncLinkedContent(f);
   f.invoices.forEach(inv => {
     const list = pays[inv.id];
     if (!list) {
@@ -197,6 +198,30 @@ function syncInvoicePayments(f) {
     const paid = list.reduce((s, p) => s + p.amount, 0);
     const before = inv.prePay.payMethod;
     inv.payMethod = paid < inv.total ? "部分總額" : (!before || before === "未付" || before === "部分總額" ? "轉帳" : before);
+  });
+}
+
+// 流水核對到發票時，流水的「內容」帶入發票的品項（多張發票用「、」接起來）。
+// contentFromInv 記住上次帶入的文字：內容空白或還是上次帶入的那段才更新；使用者自己改過內容就不動。
+// 全部取消核對時，內容如果還是帶入的那段就清掉。
+function syncLinkedContent(f) {
+  const invById = Object.fromEntries(f.invoices.map(i => [i.id, i]));
+  f.ledger.forEach(e => {
+    if (e.transferGroup) return;
+    const names = [];
+    (e.allocations || []).forEach(a => {
+      const inv = invById[a.invoiceId];
+      if (!inv) return;
+      const items = (inv.items || []).map(it => String(it.name || "").trim()).filter(Boolean);
+      (items.length ? items : [inv.category || inv.number || ""].filter(Boolean)).forEach(n => { if (!names.includes(n)) names.push(n); });
+    });
+    let text = names.join("、");
+    if (text.length > 80) text = text.slice(0, 79) + "…";
+    const cur = e.content || "";
+    const untouched = !cur || cur === e.contentFromInv;
+    if (!untouched) return;
+    if (text) { e.content = text; e.contentFromInv = text; }
+    else if (e.contentFromInv !== undefined) { if (cur === e.contentFromInv) e.content = ""; delete e.contentFromInv; }
   });
 }
 
@@ -250,7 +275,8 @@ function autoLinkByExpenseNo(f) {
   });
   f.invoices.forEach(inv => {
     if (anyLink.has(inv.id) || inv.payMethod === "不支出") return;
-    const key = String(inv.expenseNo || "").trim().toUpperCase();
+    // 連結過流水的發票，支出單號是系統帶入的流水編號；使用者自己填的記在 prePay，以那個為準
+    const key = String((inv.prePay ? inv.prePay.expenseNo : inv.expenseNo) || "").trim().toUpperCase();
     if (!key) return;
     if (inv.autoLinkSkip && inv.autoLinkSkip !== key) delete inv.autoLinkSkip;
     if (inv.autoLinkSkip === key) return;

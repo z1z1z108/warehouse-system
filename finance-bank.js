@@ -406,7 +406,7 @@ function finBindAccounts() {
 // ============================================================
 // 流水帳
 // ============================================================
-function finFilteredLedger(ctx) {
+function finFilteredLedger(ctx, skipColumnFilters) {
   const f = finLedgerFilter;
   // 由舊到新，和銀行明細表的順序一樣
   let rows = db.finance.ledger.slice().sort((a, b) => a.date.localeCompare(b.date) || (a.seq || 0) - (b.seq || 0) || a.id.localeCompare(b.id));
@@ -424,7 +424,35 @@ function finFilteredLedger(ctx) {
     });
   }
   if (f.recon) rows = rows.filter(e => finReconStatus(e, ctx).code === f.recon);
-  return rows;
+  if (skipColumnFilters) return rows;
+  // 欄位篩選（點欄位標題旁的 ▼，和發票登錄同一套）
+  const cf = finLedColFilter;
+  const has = (text, query) => !query.trim() || String(text || "").toLowerCase().includes(query.trim().toLowerCase());
+  const inList = (value, selected) => !selected.length || selected.includes(encodeURIComponent(value));
+  const invById = Object.fromEntries(db.finance.invoices.map(i => [i.id, i]));
+  return rows.filter(e => {
+    const v = finLedColValues(e, ctx, invById);
+    return has(v.no, cf.noQuery) && has(v.content, cf.contentQuery) && has(v.inv, cf.invQuery) && has(e.note, cf.noteQuery)
+      && (!cf.dateFrom || e.date >= cf.dateFrom) && (!cf.dateTo || e.date <= cf.dateTo)
+      && inList(v.category, cf.categories) && inList(v.party, cf.parties) && inList(v.recon, cf.recons);
+  });
+}
+// ---- 流水帳的欄位篩選 ----
+function finLedNewColFilter() { return { noQuery: "", dateFrom: "", dateTo: "", categories: [], contentQuery: "", invQuery: "", noteQuery: "", parties: [], recons: [] }; }
+let finLedColFilter = finLedNewColFilter();
+function finLedColActive(cf) {
+  return !!(cf.noQuery || cf.dateFrom || cf.dateTo || cf.contentQuery || cf.invQuery || cf.noteQuery || cf.categories.length || cf.parties.length || cf.recons.length);
+}
+// 各欄拿來篩選的值（清單型用 encodeURIComponent 當選項 id）
+function finLedColValues(e, ctx, invById) {
+  return {
+    no: `${e.no || ""} ${finAccountName(e.accountId)}`,
+    category: e.category || "（未分類）",
+    content: `${e.content || ""} ${e.ref || ""}`,
+    inv: [...(e.allocations || []).map(a => invById[a.invoiceId]?.number || ""), ...(e.splits || []).map(x => x.number || "")].join(" "),
+    party: e.counterparty || "（未填）",
+    recon: finReconStatus(e, ctx).label.replace(/：.*$/, ""),
+  };
 }
 
 // 新增流水時加入的發票（可多張）：列出號碼、對象、待對帳金額和合計
@@ -463,6 +491,15 @@ function finRenderLedger() {
   const d = finLedgerDraft, f = finLedgerFilter;
   const accounts = db.finance.accounts;
   const rows = finFilteredLedger(ctx);
+  // 欄位篩選：選項從「上方篩選後、欄位篩選前」的流水算出來
+  if (typeof COLUMN_FILTERS !== "undefined") COLUMN_FILTERS.fled = () => finLedColFilter;
+  const cf = finLedColFilter;
+  const ledInvById = Object.fromEntries(db.finance.invoices.map(i => [i.id, i]));
+  const baseRows = finFilteredLedger(ctx, true);
+  const listOptions = pick => [...new Set(baseRows.map(e => pick(finLedColValues(e, ctx, ledInvById))))].sort((a, b) => a.localeCompare(b, "zh-Hant")).map(v => ({ id: encodeURIComponent(v), name: finEsc(v) }));
+  const colTh = (key, label, kind, cfg, style = "") => renderHeaderFilter("fled", key, label, kind, cfg)
+    .replace('class="px-4 py-2 relative whitespace-nowrap"', `class="px-3 py-2 relative whitespace-nowrap" ${style ? `style="${style}"` : ""}`)
+    .replace("left-0 bottom-full mb-1", "left-0 top-full mt-1");
   const pages = Math.max(1, Math.ceil(rows.length / FIN_PAGE_SIZE));
   if (finLedgerPage >= pages) finLedgerPage = pages - 1;
   const pageRows = rows.slice(finLedgerPage * FIN_PAGE_SIZE, (finLedgerPage + 1) * FIN_PAGE_SIZE);
@@ -618,10 +655,24 @@ function finRenderLedger() {
     <button id="led-bulk-clear-btn" class="led-bulk text-slate-300 hover:text-white text-xs underline">清除選取</button>
   </div>
 
-  <div class="bg-white rounded-xl shadow-sm overflow-x-auto">
+  <div class="flex items-center justify-between mb-1">
+    <p class="text-xs text-slate-500">點欄位標題旁的 ▼ 即可篩選${finLedColActive(cf) ? `，目前顯示 ${rows.length} 筆` : ""}</p>
+    ${finLedColActive(cf) ? `<button id="led-col-clear" class="text-xs text-blue-600 hover:underline">清除欄位篩選</button>` : ""}
+  </div>
+  <div class="bg-white rounded-xl shadow-sm overflow-x-auto" style="${String(colMenu.id || "").startsWith("fled:") ? "min-height: 340px;" : ""}">
     <table class="grid-table w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
-        <tr><th class="px-3 py-2"><input type="checkbox" id="led-sel-all" ${allSelected ? "checked" : ""}/></th><th class="px-3 py-2 whitespace-nowrap">匯款編號</th><th class="px-3 py-2 whitespace-nowrap">匯款日期</th><th class="px-3 py-2">項目類別</th><th class="px-3 py-2" style="min-width: 9rem">內容</th><th class="px-3 py-2" style="min-width: 10rem">發票號碼</th><th class="px-3 py-2 text-right whitespace-nowrap">銷項（支出）</th><th class="px-3 py-2 text-right whitespace-nowrap">進項（收入）</th><th class="px-3 py-2 text-right whitespace-nowrap">互匯未實際扣</th><th class="px-3 py-2 text-right whitespace-nowrap">手續費</th><th class="px-3 py-2" style="min-width: 5rem">備註</th><th class="px-3 py-2" style="min-width: 7rem">收款方</th><th class="px-3 py-2 whitespace-nowrap">核對</th><th class="px-3 py-2 sticky right-0 bg-slate-100"></th></tr>
+        <tr><th class="px-3 py-2"><input type="checkbox" id="led-sel-all" ${allSelected ? "checked" : ""}/></th>
+          ${colTh("noQuery", "匯款編號", "text", { value: cf.noQuery })}
+          ${colTh("date", "匯款日期", "date", { from: cf.dateFrom, to: cf.dateTo, fromKey: "dateFrom", toKey: "dateTo", years: [...new Set(db.finance.ledger.map(x => x.date && x.date.slice(0, 4)).filter(Boolean))] })}
+          ${colTh("categories", "項目類別", "list", { options: listOptions(v => v.category), selected: cf.categories })}
+          ${colTh("contentQuery", "內容", "text", { value: cf.contentQuery }, "min-width: 9rem")}
+          ${colTh("invQuery", "發票號碼", "text", { value: cf.invQuery }, "min-width: 10rem")}
+          <th class="px-3 py-2 text-right whitespace-nowrap">銷項（支出）</th><th class="px-3 py-2 text-right whitespace-nowrap">進項（收入）</th><th class="px-3 py-2 text-right whitespace-nowrap">互匯未實際扣</th><th class="px-3 py-2 text-right whitespace-nowrap">手續費</th>
+          ${colTh("noteQuery", "備註", "text", { value: cf.noteQuery }, "min-width: 5rem")}
+          ${colTh("parties", "收款方", "list", { options: listOptions(v => v.party), selected: cf.parties }, "min-width: 7rem")}
+          ${colTh("recons", "核對", "list", { options: listOptions(v => v.recon), selected: cf.recons })}
+          <th class="px-3 py-2 sticky right-0 bg-slate-100"></th></tr>
       </thead>
       <tbody>
         ${pageRows.map((e, n) => { const isEdit = finLedgerEditId === e.id; const rs = finReconStatus(e, ctx); const nums = (e.allocations || []).map(a => invById[a.invoiceId]?.number).filter(Boolean); const transfer = finIsTransfer(e); const splits = e.splits || []; const splitOpen = finLedgerExpanded.has(e.id); return `
@@ -824,7 +875,9 @@ function finBindLedger() {
   // ---- 篩選 ----
   const bf = (id, key) => finBindFilter(id, finLedgerFilter, key, resetPage);
   bf("led-f-account", "account"); bf("led-f-type", "type"); bf("led-f-category", "category"); bf("led-f-recon", "recon"); bf("led-f-month", "month"); bf("led-f-q", "q");
-  $("led-f-clear").onclick = () => { finLedgerFilter = { account: "", type: "", category: "", recon: "", month: "", q: "" }; resetPage(); render(); };
+  $("led-f-clear").onclick = () => { finLedgerFilter = { account: "", type: "", category: "", recon: "", month: "", q: "" }; finLedColFilter = finLedNewColFilter(); resetPage(); render(); };
+  $("led-col-clear")?.addEventListener("click", () => { finLedColFilter = finLedNewColFilter(); resetPage(); render(); });
+  bindColumnFilters();
   $("led-prev")?.addEventListener("click", () => { if (finLedgerPage > 0) { finLedgerPage--; render(); document.querySelector("main").scrollTop = 0; } });
   $("led-next")?.addEventListener("click", () => { finLedgerPage++; render(); document.querySelector("main").scrollTop = 0; });
   $("led-export-btn").onclick = () => {
