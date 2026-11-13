@@ -735,7 +735,7 @@ function finRenderLedger() {
               <button data-id="${finEsc(e.id)}" class="led-del-btn text-rose-500 hover:underline text-xs">刪除</button>
             </td>
           </tr>
-          ${splits.length ? `<tr class="${splitOpen ? "" : "hidden"} detail-row"><td colspan="14" class="px-3 py-2">${finSplitDetailHtml(e)}</td></tr>` : ""}
+          ${splits.length ? finSplitRowsHtml(e, splitOpen) : ""}
           ${isEdit ? `<tr class="edit-row"><td colspan="14" class="px-4 py-4"><div class="inline-edit-box sticky left-0"><p class="font-semibold text-sm text-slate-700 mb-3">編輯流水：${finEsc(e.no) || finEsc(e.date)}</p>${finEntryEditFormHtml(e)}</div></td></tr>` : ""}`; }).join("") || `<tr><td colspan="14" class="px-4 py-8 text-center text-slate-400">沒有符合條件的流水</td></tr>`}
       </tbody>
       ${rows.length ? `
@@ -1033,7 +1033,7 @@ function finBindLedger() {
     b.onclick = () => {
       const open = !finLedgerExpanded.has(b.dataset.id);
       if (open) finLedgerExpanded.add(b.dataset.id); else finLedgerExpanded.delete(b.dataset.id);
-      b.closest("tr").nextElementSibling.classList.toggle("hidden", !open);
+      document.querySelectorAll(`tr[data-split-of="${CSS.escape(b.dataset.id)}"]`).forEach(tr => tr.classList.toggle("hidden", !open));
       b.querySelector(".led-split-chevron").textContent = open ? "▾" : "▸";
       b.setAttribute("aria-expanded", String(open));
     };
@@ -1151,40 +1151,43 @@ function finSplitInvCell(x, r) {
   if (inv) return `<button type="button" data-inv="${finEsc(inv.id)}" class="sp-inv-link text-blue-600 hover:underline" title="已自動對應發票登錄，點了查看這張發票">${finEsc(r.number)}</button>`;
   return `<span class="text-slate-500" title="發票登錄找不到這個號碼（或有多張同號碼），登錄後會自動對應">${finEsc(r.number)}</span>`;
 }
-function finSplitDetailHtml(e) {
+// 流水帳清單裡展開的拆分明細：直接用清單本身的欄位排，金額對齊上方流水的金額欄，序對齊勾選欄
+// 欄位對應：勾選→序、匯款編號→明細編號、匯款日期→發票日期、項目類別→類別、內容→品項（下面小字是開立廠商）、
+// 發票號碼→發票號碼、銷項（支出）→含稅總額（下面小字是未稅＋稅額）、備註→備註、收款方→收款方、核對→憑證類別
+function finSplitRowsHtml(e, open) {
   const rest = e.amount - finEntrySplitTotal(e) - finEntryAllocated(e);
-  const cell = v => finEsc(v) || `<span class="text-slate-300">-</span>`;
-  const money = v => v === undefined || v === "" ? `<span class="text-slate-300">-</span>` : finMoney(v);
-  return `
-    <div class="overflow-x-auto">
-    <table class="w-full text-sm bg-white border rounded" style="min-width: 1100px">
-      <thead class="bg-slate-100 text-slate-600 text-left"><tr>
-        <th class="px-3 py-2">序</th><th class="px-3 py-2 whitespace-nowrap">明細編號</th><th class="px-3 py-2">日期</th><th class="px-3 py-2 whitespace-nowrap">發票號碼</th>
-        <th class="px-3 py-2">類別</th><th class="px-3 py-2">品項</th>
-        <th class="px-3 py-2 text-right">未稅</th><th class="px-3 py-2 text-right">稅額</th><th class="px-3 py-2 text-right whitespace-nowrap">含稅總額</th>
-        <th class="px-3 py-2 whitespace-nowrap">憑證類別</th><th class="px-3 py-2">廠商</th><th class="px-3 py-2">收款方</th><th class="px-3 py-2 whitespace-nowrap">專案/工程</th><th class="px-3 py-2">備註</th>
-      </tr></thead>
-      <tbody>${e.splits.map((x, i) => { const r = finSplitToRow(x); return `
-        <tr class="border-t">
-          <td class="px-3 py-2 text-right text-xs text-slate-400">${i + 1}</td>
-          <td class="px-3 py-2 font-mono whitespace-nowrap">${finEsc(x.no) || (e.no ? `${finEsc(e.no)}-${i + 1}` : i + 1)}</td>
-          <td class="px-3 py-2 text-slate-500 whitespace-nowrap">${cell(r.date)}</td>
-          <td class="px-3 py-2 font-mono whitespace-nowrap">${finSplitInvCell(x, r)}</td>
-          <td class="px-3 py-2 whitespace-nowrap">${finEsc(r.category || e.category) || "未分類"}</td>
-          <td class="px-3 py-2">${cell(r.item)}</td>
-          <td class="px-3 py-2 text-right whitespace-nowrap">${money(x.net ?? x.amount)}</td>
-          <td class="px-3 py-2 text-right whitespace-nowrap">${money(x.tax ?? 0)}</td>
-          <td class="px-3 py-2 text-right font-semibold whitespace-nowrap">${finMoney(x.amount)}</td>
-          <td class="px-3 py-2 whitespace-nowrap">${cell(r.voucherType)}</td>
-          <td class="px-3 py-2">${cell(r.vendor)}</td>
-          <td class="px-3 py-2">${cell(r.payee)}</td>
-          <td class="px-3 py-2">${cell(r.project)}</td>
-          <td class="px-3 py-2 text-slate-500">${cell(r.note)}</td>
-        </tr>`; }).join("")}
-      </tbody>
-    </table>
-    </div>
-    ${rest > 0 ? `<p class="text-xs text-amber-600 mt-1 text-right">尚有 ${finMoney(rest)} 未拆分</p>` : ""}`;
+  const dash = `<span class="text-slate-300">-</span>`;
+  const cell = v => finEsc(v) || dash;
+  const hidden = open ? "" : "hidden";
+  const attrs = `class="${hidden} detail-row split-row" data-split-of="${finEsc(e.id)}"`;
+  const head = `
+    <tr ${attrs.replace("split-row", "split-row split-head")}>
+      <td class="px-3 py-1 text-xs text-slate-400 text-center">序</td><td class="px-3 py-1 text-xs text-slate-400">明細編號</td><td class="px-3 py-1 text-xs text-slate-400">發票日期</td><td class="px-3 py-1 text-xs text-slate-400">類別</td>
+      <td class="px-3 py-1 text-xs text-slate-400">品項／開立廠商</td><td class="px-3 py-1 text-xs text-slate-400">發票號碼</td><td class="px-3 py-1 text-xs text-slate-400 text-right">含稅總額</td>
+      <td></td><td></td><td></td><td class="px-3 py-1 text-xs text-slate-400">備註</td><td class="px-3 py-1 text-xs text-slate-400">收款方</td><td class="px-3 py-1 text-xs text-slate-400">憑證類別</td><td class="sticky right-0"></td>
+    </tr>`;
+  const rows = e.splits.map((x, i) => {
+    const r = finSplitToRow(x);
+    const net = x.net ?? x.amount, tax = x.tax ?? 0;
+    return `
+    <tr ${attrs}>
+      <td class="px-3 py-1.5 text-xs text-slate-400 text-center">${i + 1}</td>
+      <td class="px-3 py-1.5 font-mono whitespace-nowrap">${finEsc(x.no) || (e.no ? `${finEsc(e.no)}-${i + 1}` : i + 1)}</td>
+      <td class="px-3 py-1.5 text-slate-500 whitespace-nowrap">${cell(r.date ? finShortDate(r.date) : "")}</td>
+      <td class="px-3 py-1.5 whitespace-nowrap">${finEsc(r.category || e.category) || "未分類"}</td>
+      <td class="px-3 py-1.5">${cell(r.item)}${r.vendor ? `<div class="text-xs text-slate-400">${finEsc(r.vendor)}</div>` : ""}</td>
+      <td class="px-3 py-1.5 font-mono whitespace-nowrap">${finSplitInvCell(x, r)}</td>
+      <td class="px-3 py-1.5 text-right whitespace-nowrap"><div class="font-semibold text-slate-700">${finMoney(x.amount)}</div>${tax ? `<div class="text-[11px] text-slate-400">${finMoney(net)}＋稅 ${finMoney(tax)}</div>` : ""}</td>
+      <td></td><td></td><td></td>
+      <td class="px-3 py-1.5 text-slate-500">${finEsc(r.note)}</td>
+      <td class="px-3 py-1.5">${finEsc(r.payee)}</td>
+      <td class="px-3 py-1.5 text-xs text-slate-500 whitespace-nowrap">${finEsc(r.voucherType)}</td>
+      <td class="sticky right-0"></td>
+    </tr>`;
+  }).join("");
+  const restRow = rest > 0 ? `
+    <tr ${attrs}><td colspan="6" class="px-3 py-1 text-xs text-amber-600 text-right">尚有未拆分</td><td class="px-3 py-1 text-xs text-amber-600 text-right whitespace-nowrap">${finMoney(rest)}</td><td colspan="7"></td></tr>` : "";
+  return head + rows + restRow;
 }
 function finSplitRow(r, idx) {
   const inp = (field, label, extra = "", cls = "") => `<label class="block"><span class="text-xs text-slate-500">${label}</span><input data-field="${field}" value="${finEsc(r[field])}" aria-label="第 ${idx + 1} 筆${label}" class="w-full border rounded px-2 py-1.5 text-sm mt-0.5 ${cls}" ${extra}/></label>`;
