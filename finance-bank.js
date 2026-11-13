@@ -1198,7 +1198,7 @@ function finSplitRow(r, idx) {
     </div>
     <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
       ${inp("date", "發票日期", `type="date"`)}
-      ${inp("number", "發票/收據號碼", `placeholder="選填"`)}
+      ${inp("number", "發票/收據號碼", `list="sp-inv-list" autocomplete="off" placeholder="KEY 號碼帶入發票資料"`, "font-mono")}
       <label class="block"><span class="text-xs text-slate-500">類別</span><select data-field="category" aria-label="第 ${idx + 1} 筆類別" class="w-full border rounded px-2 py-1.5 text-sm mt-0.5">${finCategoryOptions("expense", r.category)}</select></label>
       <div class="col-span-2 md:col-span-1 lg:col-span-3">${inp("item", "品項", `placeholder="例：RFK-7997、差旅費"`)}</div>
       ${money("net", "未稅")}
@@ -1311,10 +1311,11 @@ function finRenderEntrySplit() {
     </div>
   </div>
   <div class="bg-white rounded-xl shadow-sm p-5">
-    <p class="text-xs text-slate-500 mb-3">一筆整批匯款可以拆成多張發票、不同廠商或員工。填未稅會自動算 5% 稅額（收據、其他不算稅）；也可以直接填含稅總額。</p>
+    <p class="text-xs text-slate-500 mb-3">一筆整批匯款可以拆成多張發票、不同廠商或員工。填未稅會自動算 5% 稅額（收據、其他不算稅）；也可以直接填含稅總額。發票號碼 KEY 發票登錄裡有的號碼，會自動帶入發票日期、開立廠商和金額。</p>
     <datalist id="sp-vendor-list">${opts(vendors)}</datalist>
     <datalist id="sp-payee-list">${opts(payees)}</datalist>
     <datalist id="sp-project-list">${opts(projects)}</datalist>
+    <datalist id="sp-inv-list">${db.finance.invoices.filter(i => i.kind === "purchase" && i.number).map(i => `<option value="${finEsc(i.number)}">${finEsc(i.vendor || finPartyName(i))} ${finEsc(i.date)} ${finMoney(i.total)}</option>`).join("")}</datalist>
     <div id="sp-rows" class="bg-slate-50 rounded-lg p-2">${finSplitDraft.rows.map(finSplitRow).join("")}</div>
     <button type="button" id="sp-add" class="text-sm text-blue-600 hover:underline mt-2">＋ 新增一筆</button>
     <details class="mt-3 border rounded-lg px-3 py-2 bg-slate-50">
@@ -1384,7 +1385,32 @@ function finBindEntrySplit() {
     totals();
   };
   box.oninput = onField;
-  box.onchange = ev => { if (ev.target.tagName === "SELECT") onField(ev); };
+  // KEY 發票號碼（打完離開欄位、按 Enter 或從清單選）：發票登錄有這張就帶入發票日期、號碼、開立廠商、金額、憑證類別和類別；
+  // 品項空白時也帶入。收款方、專案、備註不動
+  const fillFromInvoice = el => {
+    const rowEl = el.closest(".sp-row");
+    const r = d.rows[Number(rowEl.dataset.idx)];
+    const key = finNormInvNo(el.value);
+    if (!key) return;
+    const inv = db.finance.invoices.find(i => i.kind === "purchase" && finNormInvNo(i.number) === key);
+    if (!inv) return showMsg("sp-msg", `發票登錄找不到「${el.value.trim()}」，金額等資料請自己填`, true);
+    const items = (inv.items || []).map(it => String(it.name || "").trim()).filter(Boolean).join("、");
+    Object.assign(r, {
+      number: inv.number, date: inv.date || r.date, vendor: inv.vendor || r.vendor,
+      voucherType: inv.voucherType || r.voucherType, net: String(inv.amount), tax: String(inv.tax), amount: String(inv.total), taxTouched: true,
+      category: inv.category || r.category || "", item: r.item || items,
+    });
+    const scrollTop = document.querySelector("main")?.scrollTop;
+    paint();
+    if (scrollTop != null) document.querySelector("main").scrollTop = scrollTop;
+    const others = finInvoicePayments()[inv.id] || [];
+    showMsg("sp-msg", `第 ${Number(rowEl.dataset.idx) + 1} 筆已帶入發票 ${inv.number}（${inv.vendor || finPartyName(inv)}，${inv.date}，${finMoney(inv.total)}）${others.length ? `。注意：這張發票已經連結 ${others.map(p => p.no).filter(Boolean).join("、")}` : ""}`, !!others.length);
+  };
+  box.onchange = ev => {
+    if (ev.target.tagName === "SELECT") onField(ev);
+    else if (ev.target.dataset.field === "number") fillFromInvoice(ev.target);
+  };
+  box.addEventListener("keydown", ev => { if (ev.key === "Enter" && ev.target.dataset.field === "number") { ev.preventDefault(); ev.target.blur(); } });
   box.onclick = ev => {
     if (!ev.target.closest(".sp-del")) return;
     d.rows.splice(Number(ev.target.closest(".sp-row").dataset.idx), 1);
