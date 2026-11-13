@@ -846,6 +846,8 @@ function finBindLedger() {
     };
   });
   document.querySelectorAll(".led-split-btn").forEach(b => { b.onclick = () => { finSplitDraft = null; navigateTo({ page: "fin-entry-split", finEntryId: b.dataset.id }); }; });
+  // 拆分明細裡對應到的發票：到發票登錄（銷項到應收帳款）只列出那張發票並展開
+  document.querySelectorAll(".sp-inv-link").forEach(b => { b.onclick = () => finShowInvoice(b.dataset.inv); });
   document.querySelectorAll(".led-split-toggle").forEach(b => {
     b.onclick = () => {
       const open = !finLedgerExpanded.has(b.dataset.id);
@@ -949,6 +951,13 @@ function finSplitBlankRow(e, prev) {
   return { date: prev?.date || e.date || "", voucherType: prev?.voucherType || FIN_VOUCHER_TYPES[0], number: "", vendor: "", payee: "",
     category: prev?.category || e.category || "", project: prev?.project || "", item: "", net: "", tax: "", amount: "", note: "", taxTouched: false };
 }
+// 拆分明細的發票號碼：對應到發票登錄的用藍字（點了到發票登錄看那張發票），找不到的用灰字
+function finSplitInvCell(x, r) {
+  if (!r.number) return `<span class="text-slate-300">-</span>`;
+  const inv = x.invoiceId && db.finance.invoices.find(i => i.id === x.invoiceId);
+  if (inv) return `<button type="button" data-inv="${finEsc(inv.id)}" class="sp-inv-link text-blue-600 hover:underline" title="已自動對應發票登錄，點了查看這張發票">${finEsc(r.number)}</button>`;
+  return `<span class="text-slate-500" title="發票登錄找不到這個號碼（或有多張同號碼），登錄後會自動對應">${finEsc(r.number)}</span>`;
+}
 function finSplitDetailHtml(e) {
   const rest = e.amount - finEntrySplitTotal(e) - finEntryAllocated(e);
   const cell = v => finEsc(v) || `<span class="text-slate-300">-</span>`;
@@ -965,9 +974,9 @@ function finSplitDetailHtml(e) {
       <tbody>${e.splits.map((x, i) => { const r = finSplitToRow(x); return `
         <tr class="border-t">
           <td class="px-3 py-2 text-right text-xs text-slate-400">${i + 1}</td>
-          <td class="px-3 py-2 font-mono whitespace-nowrap">${e.no ? `${finEsc(e.no)}-${i + 1}` : i + 1}</td>
+          <td class="px-3 py-2 font-mono whitespace-nowrap">${finEsc(x.no) || (e.no ? `${finEsc(e.no)}-${i + 1}` : i + 1)}</td>
           <td class="px-3 py-2 text-slate-500 whitespace-nowrap">${cell(r.date)}</td>
-          <td class="px-3 py-2 font-mono whitespace-nowrap">${cell(r.number)}</td>
+          <td class="px-3 py-2 font-mono whitespace-nowrap">${finSplitInvCell(x, r)}</td>
           <td class="px-3 py-2 whitespace-nowrap">${finEsc(r.category || e.category) || "未分類"}</td>
           <td class="px-3 py-2">${cell(r.item)}</td>
           <td class="px-3 py-2 text-right whitespace-nowrap">${money(x.net ?? x.amount)}</td>
@@ -1133,6 +1142,10 @@ function finBindEntrySplit() {
       if (vendor) vendorsToRemember.push(vendor);
       const x = { id: r.id || finId("spl"), date: t("date"), voucherType: r.voucherType || FIN_VOUCHER_TYPES[0], number: t("number"), vendor, payee: t("payee"),
         category: t("category"), project: t("project"), item: t("item"), net, tax, amount, note: t("note") };
+      // 明細編號和對應的發票沿用原本那筆（發票號碼改了，存檔時 data.js 會重新對應）
+      const old = (e.splits || []).find(o => o.id && o.id === r.id);
+      if (old?.no) x.no = old.no;
+      if (old?.invoiceId) x.invoiceId = old.invoiceId;
       x.name = finSplitLabel(x);
       splits.push(x);
     }

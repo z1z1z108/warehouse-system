@@ -172,8 +172,9 @@ function assignFinanceNumbers(f) {
 // 第一次連結時先記下原本的內容（prePay），全部取消連結時還原。付不足額（例如先付訂金）時，付款方式顯示「部分總額」。
 // 發票日期和付款日期由使用者自己填，不會被流水改掉。
 function syncInvoicePayments(f) {
+  syncSplitLinks(f);
   const pays = {};
-  f.ledger.forEach(e => (e.allocations || []).forEach(a => { (pays[a.invoiceId] = pays[a.invoiceId] || []).push({ no: e.no || "", date: e.date, amount: a.amount }); }));
+  finLedgerLinks(f).forEach(l => { (pays[l.invoiceId] = pays[l.invoiceId] || []).push(l); });
   syncLinkedVendorsAndCategories(f);
   f.invoices.forEach(inv => {
     const list = pays[inv.id];
@@ -198,6 +199,45 @@ function syncInvoicePayments(f) {
   });
 }
 
+// 拆分明細：
+// 1. 明細編號 = 流水編號-序號（例如 T10932-1），編上就固定，刪掉中間一筆也不會重編、不會再發出去（splitSeq 記到第幾號）
+// 2. 明細有填發票號碼，而且發票登錄剛好有一張同號碼的（支出對進項、收入對銷項）就自動對應；
+//    號碼改了或發票刪了就解除，之後登錄了同號碼的發票也會自動對上
+function finNormInvNo(s) { return String(s || "").toUpperCase().replace(/[\s-]/g, ""); }
+function syncSplitLinks(f) {
+  const invById = Object.fromEntries(f.invoices.map(i => [i.id, i]));
+  const byNo = {};
+  f.invoices.forEach(i => { const k = finNormInvNo(i.number); if (k) (byNo[`${i.kind}|${k}`] = byNo[`${i.kind}|${k}`] || []).push(i); });
+  f.ledger.forEach(e => {
+    const splits = e.splits || [];
+    if (!splits.length) return;
+    if (e.no) {
+      const seqOf = x => x.no && x.no.startsWith(e.no + "-") ? Number(x.no.slice(e.no.length + 1)) || 0 : 0;
+      let max = splits.reduce((m, x) => Math.max(m, seqOf(x)), e.splitSeq || 0);
+      splits.forEach(x => { if (!seqOf(x)) x.no = `${e.no}-${++max}`; });
+      e.splitSeq = max;
+    }
+    const kind = e.type === "income" ? "sales" : "purchase";
+    splits.forEach(x => {
+      const k = finNormInvNo(x.number);
+      const cur = x.invoiceId && invById[x.invoiceId];
+      if (cur && k && cur.kind === kind && finNormInvNo(cur.number) === k) return;
+      delete x.invoiceId;
+      const cands = k && !e.transferGroup ? byNo[`${kind}|${k}`] || [] : [];
+      if (cands.length === 1) x.invoiceId = cands[0].id;
+    });
+  });
+}
+// 流水連到發票的每一筆：整筆核對（allocations）和拆分明細對應的發票（拆分的用明細編號）
+function finLedgerLinks(f) {
+  const out = [];
+  f.ledger.forEach(e => {
+    (e.allocations || []).forEach(a => out.push({ invoiceId: a.invoiceId, entryId: e.id, no: e.no || "", accountId: e.accountId, date: e.date, amount: a.amount, auto: !!a.auto }));
+    (e.splits || []).forEach(x => { if (x.invoiceId) out.push({ invoiceId: x.invoiceId, entryId: e.id, splitId: x.id || "", no: x.no || e.no || "", accountId: e.accountId, date: e.date, amount: x.amount, auto: true }); });
+  });
+  return out;
+}
+
 // 已對到帳的支出流水和進項發票：廠商（流水的收款方 ↔ 發票的開立公司）和類別，一方空白就帶入另一方。
 // 兩邊都有但不同時不在這裡改：廠商維持原樣，類別由畫面跳出提示讓使用者選。
 function syncLinkedVendorsAndCategories(f) {
@@ -213,6 +253,15 @@ function syncLinkedVendorsAndCategories(f) {
     if (!e.category && only("category")) e.category = only("category");
     if (e.category) invs.forEach(i => { if (!i.category) i.category = e.category; });
   });
+  // 拆分明細對應的發票：發票空白的廠商、類別、專案由明細帶入
+  f.ledger.forEach(e => (e.splits || []).forEach(x => {
+    const inv = x.invoiceId && invById[x.invoiceId];
+    if (!inv) return;
+    const category = x.category || (e.transferGroup ? "" : e.category);
+    if (!inv.vendor && x.vendor) inv.vendor = x.vendor;
+    if (!inv.category && category && category !== FIN_TRANSFER_LABEL) inv.category = category;
+    if (!inv.project && x.project) inv.project = x.project;
+  }));
 }
 
 function loadDB() {

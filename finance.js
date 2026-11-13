@@ -165,9 +165,7 @@ function finEntryCategoryParts(e) {
 // 每張發票對應到哪些流水（帳戶、編號、日期、金額）
 function finInvoicePayments() {
   const out = {};
-  db.finance.ledger.forEach(e => (e.allocations || []).forEach(a => {
-    (out[a.invoiceId] = out[a.invoiceId] || []).push({ entryId: e.id, no: e.no || "", accountId: e.accountId, date: e.date, amount: a.amount, auto: !!a.auto });
-  }));
+  finLedgerLinks(db.finance).forEach(l => { (out[l.invoiceId] = out[l.invoiceId] || []).push(l); });   // 含拆分明細對應的發票
   Object.values(out).forEach(list => list.sort((a, b) => a.date.localeCompare(b.date)));
   return out;
 }
@@ -182,7 +180,7 @@ function finStateLabel(kind, state) {
 }
 function finSettlement() {
   const paid = {};
-  db.finance.ledger.forEach(e => (e.allocations || []).forEach(a => { paid[a.invoiceId] = (paid[a.invoiceId] || 0) + a.amount; }));
+  finLedgerLinks(db.finance).forEach(l => { paid[l.invoiceId] = (paid[l.invoiceId] || 0) + l.amount; });
   const out = {};
   db.finance.invoices.forEach(inv => {
     // 不支出：不需要付款，不算未付也不算已付
@@ -385,7 +383,7 @@ const FIN_NONE_CELL = `<span class="text-slate-300">-</span>`;
 // 流水編號欄：已連結流水就列出流水編號（點了開啟核對）；還沒連結時顯示手動填的支出單號（例如 P09030、中部零用金）
 function finInvNoCell(list, inv) {
   if ((list || []).length) {
-    return list.map(p => `<button type="button" data-entry="${finEsc(p.entryId)}" class="inv-pay-link block text-left font-mono ${p.auto ? "text-blue-600" : "text-slate-500"} hover:underline whitespace-nowrap" title="${p.auto ? "系統自動核對" : "手動連結"}，點了開啟這筆流水的核對">${finEsc(p.no) || "無編號"}</button>`).join("");
+    return list.map(p => `<button type="button" data-entry="${finEsc(p.entryId)}" data-split="${p.splitId !== undefined ? 1 : ""}" class="inv-pay-link block text-left font-mono ${p.auto ? "text-blue-600" : "text-slate-500"} hover:underline whitespace-nowrap" title="${p.splitId !== undefined ? "流水拆分明細的發票號碼自動對應，點了開啟拆分明細" : p.auto ? "系統自動核對，點了開啟這筆流水的核對" : "手動連結，點了開啟這筆流水的核對"}">${finEsc(p.no) || "無編號"}</button>`).join("");
   }
   return inv.expenseNo ? `<span class="font-mono text-slate-500 whitespace-nowrap" title="手動填的支出單號，還沒連結流水">${finEsc(inv.expenseNo)}</span>` : FIN_NONE_CELL;
 }
@@ -876,7 +874,7 @@ function finBindInvoices() {
   document.querySelectorAll(".inv-row").forEach(row => {
     row.onclick = e => {
       const link = e.target.closest(".inv-pay-link");
-      if (link) return finOpenReconcile(link.dataset.entry);
+      if (link) { if (link.dataset.split) { finSplitDraft = null; return navigateTo({ page: "fin-entry-split", finEntryId: link.dataset.entry }); } return finOpenReconcile(link.dataset.entry); }
       if (e.target.closest(".inv-del-btn, .inv-edit-btn")) return;
       const id = row.dataset.id;
       const open = !finInvExpanded.has(id);
@@ -1319,4 +1317,16 @@ function finBindReports() {
     finAgingData().forEach(r => rows.push([clientName(r.clientId), r.d0, r.d30, r.d60, r.d90, r.total]));
     finDownloadCSV("應收帳款帳齡", rows);
   };
+}
+
+// 從別頁跳到某張發票：發票登錄（或應收帳款）用號碼搜尋、清掉欄位篩選，展開那張並捲過去
+function finShowInvoice(id) {
+  const inv = db.finance.invoices.find(i => i.id === id);
+  if (!inv) return;
+  const mode = inv.kind === "sales" ? "sales" : "purchase";
+  Object.assign(finInvFilters[mode], { status: "", month: "", q: inv.number || "" });
+  finInvColFilters[mode] = { ...finInvNewColFilter(), dateFrom: "", dateTo: "" };
+  finInvExpanded.add(inv.id);
+  scrollToRowId = inv.id;
+  navigateTo({ page: mode === "sales" ? "fin-ar" : "fin-invoices" });
 }
