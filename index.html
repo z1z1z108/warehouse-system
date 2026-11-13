@@ -22,6 +22,15 @@
   .grid-table > tbody > tr.data-row.row-warn > td { background-color: #fbf8f1; }
   .grid-table > tbody > tr.data-row:hover > td { background-color: #eef2f6; }
   .grid-table > tbody > tr.detail-row > td { background-color: #f4f6f8; }
+  /* 流水帳：每筆都是白底，用淡外框分隔；展開的拆分明細用灰底、左側一條灰藍線，看得出是上一筆的明細 */
+  .ledger-table > tbody > tr > td { border-bottom-color: #dfe4ea; border-right-color: #e8ecf0; }
+  .ledger-table > tbody > tr.split-row > td { background-color: #f1f4f7; border-bottom-color: #e3e8ee; font-size: 0.8125rem; }
+  .ledger-table > tbody > tr.split-row > td:first-child { box-shadow: inset 3px 0 0 #b9c4d0; }
+  .ledger-table > tbody > tr.split-head > td { background-color: #e7ecf1; color: #64748b; padding-top: 4px; padding-bottom: 4px; border-top: 1px solid #d5dce4; }
+  .ledger-table > tbody > tr.split-row:hover > td { background-color: #e9eef3; }
+  .ledger-table > tbody > tr.split-head:hover > td { background-color: #e7ecf1; }
+  /* 發票號碼一列放兩個 */
+  .led-inv-grid { display: grid; grid-template-columns: repeat(2, max-content); column-gap: 0.75rem; row-gap: 2px; }
   /* 正在編輯的那一列和下方展開的編輯區：淡米色，上下框線 */
   .grid-table > tbody > tr.data-row.row-editing > td { background-color: #f3efe4; border-top: 2px solid #d9cfb6; }
   .grid-table > tbody > tr.edit-row > td { background-color: #faf8f2; border-bottom: 2px solid #d9cfb6; border-right: 0; }

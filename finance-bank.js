@@ -681,14 +681,14 @@ function finRenderLedger() {
     ${finLedColActive(cf) ? `<button id="led-col-clear" class="text-xs text-blue-600 hover:underline">清除欄位篩選</button>` : ""}
   </div>
   <div class="bg-white rounded-xl shadow-sm overflow-x-auto" style="${String(colMenu.id || "").startsWith("fled:") ? "min-height: 340px;" : ""}">
-    <table class="grid-table w-full text-sm">
+    <table class="grid-table ledger-table w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-left">
         <tr><th class="px-3 py-2"><input type="checkbox" id="led-sel-all" ${allSelected ? "checked" : ""}/></th>
           ${colTh("noQuery", "匯款編號", "text", { value: cf.noQuery })}
           ${colTh("date", "匯款日期", "date", { from: cf.dateFrom, to: cf.dateTo, fromKey: "dateFrom", toKey: "dateTo", years: [...new Set(db.finance.ledger.map(x => x.date && x.date.slice(0, 4)).filter(Boolean))] })}
           ${colTh("categories", "項目類別", "list", { options: listOptions(v => v.category), selected: cf.categories })}
           ${colTh("contentQuery", "內容", "text", { value: cf.contentQuery }, "min-width: 9rem")}
-          ${colTh("invQuery", "發票號碼", "text", { value: cf.invQuery }, "min-width: 10rem")}
+          ${colTh("invQuery", "發票號碼", "text", { value: cf.invQuery }, "min-width: 15rem")}
           <th class="px-3 py-2 text-right whitespace-nowrap">銷項（支出）</th><th class="px-3 py-2 text-right whitespace-nowrap">進項（收入）</th><th class="px-3 py-2 text-right whitespace-nowrap">互匯未實際扣</th><th class="px-3 py-2 text-right whitespace-nowrap">手續費</th>
           ${colTh("noteQuery", "備註", "text", { value: cf.noteQuery }, "min-width: 5rem")}
           ${colTh("parties", "收款方", "list", { options: listOptions(v => v.party), selected: cf.parties }, "min-width: 7rem")}
@@ -697,7 +697,7 @@ function finRenderLedger() {
       </thead>
       <tbody>
         ${pageRows.map((e, n) => { const isEdit = finLedgerEditId === e.id; const rs = finReconStatus(e, ctx); const nums = (e.allocations || []).map(a => invById[a.invoiceId]?.number).filter(Boolean); const transfer = finIsTransfer(e); const splits = e.splits || []; const splitOpen = finLedgerExpanded.has(e.id); return `
-          <tr class="data-row ${n % 2 ? "row-alt" : ""} ${!e.category && !transfer ? "row-warn" : ""} ${isEdit ? "row-editing" : ""}" data-row-id="${finEsc(e.id)}">
+          <tr class="data-row ${!e.category && !transfer ? "row-warn" : ""} ${isEdit ? "row-editing" : ""}" data-row-id="${finEsc(e.id)}">
             <td class="px-3 py-2"><input type="checkbox" class="led-sel" data-id="${finEsc(e.id)}" ${finLedgerSel.has(e.id) ? "checked" : ""}/></td>
             <td class="px-3 py-2 whitespace-nowrap"><div class="font-mono">${finEsc(e.no) || `<span class="text-slate-300">-</span>`}</div>${f.account ? "" : `<div class="text-[11px] text-slate-400">${finEsc(finAccountName(e.accountId))}</div>`}</td>
             <td class="px-3 py-2 text-slate-500 whitespace-nowrap" title="${finEsc(e.date)}">${finEsc(finShortDate(e.date))}</td>
@@ -707,6 +707,7 @@ function finRenderLedger() {
               ${e.ref ? `<div class="text-xs text-slate-400">${finEsc(e.ref)}</div>` : ""}
             </td>
             <td class="px-3 py-2">
+              <div class="led-inv-grid">
               ${(e.allocations || []).filter(a => invById[a.invoiceId]).map(a => `
                 <div class="flex items-center gap-1 whitespace-nowrap">
                   <button type="button" data-id="${finEsc(e.id)}" class="led-recon-btn text-left font-mono ${a.auto ? "text-blue-600" : "text-slate-500"} hover:underline" title="${a.auto ? "系統自動核對" : "手動連結"}（${finMoney(a.amount)}），點了開啟核對">${finEsc(invById[a.invoiceId].number) || "（無號碼）"}</button>
@@ -720,6 +721,7 @@ function finRenderLedger() {
                     ? `<button type="button" data-inv="${finEsc(inv.id)}" class="sp-inv-link text-left font-mono text-blue-600 hover:underline" title="拆分明細 ${finEsc(x.no || "")}，已對應發票登錄（${finMoney(x.amount)}），點了查看這張發票">${finEsc(x.number)}</button>`
                     : `<span class="font-mono text-slate-500" title="拆分明細 ${finEsc(x.no || "")}（${finMoney(x.amount)}），發票登錄找不到這個號碼">${finEsc(x.number)}</span>`}${tag}</div>`;
                 }).join("")}
+              </div>
               ${/* 不需核對、貸款扣款的流水不用 KEY 發票號碼 */ !transfer && rs.code !== "nomatch" && rs.code !== "loan" && e.amount - finEntryAllocated(e) - finEntrySplitTotal(e) > 0
                 ? (nums.length && !finLedgerInvAdding.has(e.id)
                   ? `<button type="button" data-id="${finEsc(e.id)}" class="led-inv-add text-xs text-blue-600 hover:underline mt-1 whitespace-nowrap">＋ 新增發票號碼</button>`
