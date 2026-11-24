@@ -909,12 +909,26 @@ function renderHeaderFilter(scope, key, label, kind, cfg) {
         <button class="col-menu-date-clear text-xs text-blue-600 hover:underline mt-1.5" data-scope="${scope}" data-from="${cfg.fromKey}" data-to="${cfg.toKey}">清除</button>`;
     }
   }
+  // cfg.sort（{ dir: "asc" | "desc" | "" }）有給時，選單最上面多「升冪／降冪」排序，標題旁顯示目前排序方向
+  if (open && cfg.sort) {
+    const sb = (dir, text) => `<button class="col-sort-btn flex-1 border rounded px-2 py-1 text-xs ${cfg.sort.dir === dir ? "bg-slate-800 text-white border-slate-800" : "hover:bg-slate-100"}" data-scope="${scope}" data-key="${key}" data-dir="${dir}">${text}</button>`;
+    body = `<div class="flex gap-1.5 mb-2 pb-2 border-b">${sb("asc", "↑ 升冪")}${sb("desc", "↓ 降冪")}</div>` + body;
+  }
+  const sortMark = cfg.sort && cfg.sort.dir ? `<span class="text-xs text-blue-600 ml-0.5" title="${cfg.sort.dir === "asc" ? "升冪" : "降冪"}排序">${cfg.sort.dir === "asc" ? "↑" : "↓"}</span>` : "";
   return `
   <th class="px-4 py-2 relative whitespace-nowrap">
-    <span>${label}</span>
+    <span>${label}</span>${sortMark}
     <button class="col-filter-btn ml-1 text-xs ${active ? "text-blue-600" : "text-slate-400 hover:text-slate-600"}" data-menu="${menuId}" title="篩選${label}">${active ? "▼●" : "▼"}</button>
     ${open ? `<div class="col-menu absolute z-30 left-0 bottom-full mb-1 bg-white border rounded-lg shadow-lg p-2 w-56 font-normal text-slate-700 whitespace-normal">${body}</div>` : ""}
   </th>`;
+}
+
+// 沒有篩選選單的欄位（例如金額）：點標題就排序，第一次升冪、再點降冪
+const COLUMN_SORTS = {};   // scope → (key, dir) => 設定排序
+function renderSortHeader(scope, key, label, sort, thClass) {
+  const on = sort && sort.key === key;
+  const next = on && sort.dir === "asc" ? "desc" : "asc";
+  return `<th class="${thClass}"><button type="button" class="col-sort-th whitespace-nowrap hover:text-slate-900" data-scope="${scope}" data-key="${key}" data-dir="${next}" title="點一下${next === "asc" ? "升冪" : "降冪"}排序">${label}<span class="text-xs ml-0.5 ${on ? "text-blue-600" : "text-slate-300"}">${on ? (sort.dir === "asc" ? "↑" : "↓") : "⇅"}</span></button></th>`;
 }
 
 // 選單固定往上展開；上方空間不夠（會被切掉）時，把表格往下推出足夠的空間，避免遮住下方資料
@@ -946,6 +960,15 @@ function bindColumnFilters() {
       }
     });
   }
+  document.querySelectorAll(".col-sort-btn, .col-sort-th").forEach(btn => {
+    btn.onclick = () => {
+      const set = COLUMN_SORTS[btn.dataset.scope];
+      if (!set) return;
+      set(btn.dataset.key, btn.dataset.dir);
+      colMenu = { id: null, search: "" };
+      render();
+    };
+  });
   document.querySelectorAll(".col-filter-btn").forEach(btn => {
     btn.onclick = () => {
       colMenu = colMenu.id === btn.dataset.menu ? { id: null, search: "" } : { id: btn.dataset.menu, search: "" };

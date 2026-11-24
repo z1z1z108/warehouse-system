@@ -342,6 +342,13 @@ function finInvNewColFilter() {
   return { noQuery: "", ...finInvThisYear(), numberQuery: "", categories: [], itemQuery: "", statuses: [], parties: [], payees: [], noteQuery: "" };
 }
 const finInvColFilters = { purchase: finInvNewColFilter(), sales: finInvNewColFilter() };
+// 清單排序：key 是欄位（和欄位篩選同名；金額欄是 amount／tax／total／paid），dir 是 asc 升冪、desc 降冪。預設日期升冪；兩頁各自記
+const finInvSort = { purchase: { key: "date", dir: "asc" }, sales: { key: "date", dir: "asc" } };
+function finInvSortValue(i, key, st, pays) {
+  const v = finInvColValues(i, st, pays);
+  return { noQuery: v.no, date: i.date || "", numberQuery: i.number || "", categories: i.category || "", itemQuery: v.item, statuses: v.status,
+    parties: v.party, payees: i.payee || "", noteQuery: i.note || "", amount: i.amount, tax: i.tax, total: i.total, paid: st[i.id].paid }[key];
+}
 // 各欄要拿來篩選的值（清單型的值用 encodeURIComponent 當選項 id，名稱有 & 或引號也不會出錯）
 function finInvColValues(i, st, pays) {
   const list = pays[i.id] || [];
@@ -367,6 +374,19 @@ function finFilteredInvoices(st, skipColumnFilters) {
   // 付款狀態篩選和清單「狀態」欄用同一組文字（進項就是付款方式），選什麼就只列出狀態欄顯示那樣的發票
   if (f.status) rows = rows.filter(i => st[i.id]?.status === f.status);
   const pays = finInvoicePayments();
+  // 依選的欄位排序（同值維持日期順序）；空白的排最後
+  const so = finInvSort[f.kind === "sales" ? "sales" : "purchase"];
+  if (so && !(so.key === "date" && so.dir === "asc")) {
+    const sign = so.dir === "desc" ? -1 : 1;
+    const val = new Map(rows.map(i => [i.id, finInvSortValue(i, so.key, st, pays)]));
+    const blank = x => x === "" || x == null;
+    rows = rows.map((i, n) => [i, n]).sort(([a, na], [b, nb]) => {
+      const x = val.get(a.id), y = val.get(b.id);
+      if (blank(x) !== blank(y)) return blank(x) ? 1 : -1;
+      const c = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y), "zh-Hant", { numeric: true });
+      return c ? c * sign : na - nb;
+    }).map(([i]) => i);
+  }
   const q = f.q.trim().toLowerCase();
   if (q) rows = rows.filter(i => `${finInvoiceSearchText(i)} ${(pays[i.id] || []).map(p => p.no).join(" ")}`.toLowerCase().includes(q));
   if (skipColumnFilters) return rows;
@@ -537,7 +557,9 @@ function finRenderInvoices() {
   if (typeof COLUMN_FILTERS !== "undefined") COLUMN_FILTERS.finv = () => finInvColFilters[finInvMode()];
   const colF = finInvColFilters[mode];
   const stickyTh = "px-3 py-2 sticky top-0 z-20 bg-slate-100";
-  const colTh = (key, label, kind, cfg) => renderHeaderFilter("finv", key, label, kind, cfg)
+  const sortNow = finInvSort[mode];
+  if (typeof COLUMN_SORTS !== "undefined") COLUMN_SORTS.finv = (key, dir) => { finInvSort[finInvMode()] = { key, dir }; };
+  const colTh = (key, label, kind, cfg) => renderHeaderFilter("finv", key, label, kind, { ...cfg, sort: { dir: sortNow.key === key ? sortNow.dir : "" } })
     .replace('class="px-4 py-2 relative whitespace-nowrap"', `class="${stickyTh} whitespace-nowrap"`)
     .replace("left-0 bottom-full mb-1", "left-0 top-full mt-1");
   const baseRows = finFilteredInvoices(st, true);
@@ -706,7 +728,7 @@ function finRenderInvoices() {
           ${colTh("numberQuery", "發票號碼", "text", { value: colF.numberQuery })}
           ${colTh("categories", "類別", "list", { options: listOptions(v => v.category), selected: colF.categories })}
           ${colTh("itemQuery", "品項", "text", { value: colF.itemQuery })}
-          <th class="${stickyTh} text-right">未稅</th><th class="${stickyTh} text-right">稅額</th><th class="${stickyTh} text-right">含稅總額</th><th class="${stickyTh} text-right">已核對</th>
+          ${[["amount", "未稅"], ["tax", "稅額"], ["total", "含稅總額"], ["paid", "已核對"]].map(([k, l]) => renderSortHeader("finv", k, l, sortNow, `${stickyTh} text-right`)).join("")}
           ${colTh("statuses", "狀態", "list", { options: listOptions(v => v.status), selected: colF.statuses })}
           ${colTh("parties", isSales ? "客戶" : "廠商", "list", { options: listOptions(v => v.party), selected: colF.parties })}
           ${isSales ? "" : colTh("payees", "收款方", "list", { options: listOptions(v => v.payee), selected: colF.payees || (colF.payees = []) })}
