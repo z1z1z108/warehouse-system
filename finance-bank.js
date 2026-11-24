@@ -102,6 +102,25 @@ function finSyncCategories(entries, source, onlyInvoiceId) {
   }
 }
 
+// 流水沒有發票號碼（收據、沒有號碼的單據）：在發票登錄建一筆收據／其他憑證，金額是流水還沒交代的部分，直接連到這筆流水。
+// 收款方→開立廠商、類別、內容→品項都從流水帶入；支出單號是流水編號；不算稅（收據、其他）
+function finLedgerAddVoucher(e, voucherType) {
+  const rest = e.amount - finEntryAllocated(e) - finEntrySplitTotal(e);
+  if (rest <= 0) return alert("這筆流水的金額已經分配完了。");
+  const vendor = e.counterparty ? finCanonicalVendor(e.counterparty) : "";
+  const inv = {
+    id: finId("inv"), kind: "purchase", date: e.date, number: "", voucherType, taxType: "zero",
+    items: [{ name: e.content || e.category || `${voucherType}支出`, qty: 1, price: rest, amount: rest }],
+    amount: rest, tax: 0, total: rest, clientId: "", vendor, category: e.category || "", project: "", payee: "",
+    payMethod: FIN_PAY_UNPAID, payDate: "", expenseNo: e.no || "", note: `由流水 ${e.no || e.date} 建立（沒有發票號碼）`,
+  };
+  db.finance.invoices.push(inv);
+  e.allocations = [...(e.allocations || []), { invoiceId: inv.id, amount: rest }];
+  delete e.noMatch; delete e.noMatchReason; delete e.loanId;
+  if (vendor) finRememberVendor(vendor);
+  saveDB(db);
+  finRenderKeepScroll();
+}
 // 發票的資訊帶入流水（只填空白欄位）：收款方 ← 廠商／客戶、類別 ← 發票類別、內容 ← 品項。回傳填了哪些欄位
 function finFillEntryFromInvoice(e, inv) {
   const filled = [];
@@ -150,7 +169,7 @@ function finLinkInvoiceByNumber(e, raw) {
   if (kind === "sales" && (e.allocations || []).some(a => db.finance.invoices.find(i => i.id === a.invoiceId)?.clientId !== inv.clientId)) return alert("一筆入帳只能核對同一個客戶的發票。");
   const apply = () => {
     e.allocations = [...(e.allocations || []), { invoiceId: inv.id, amount: Math.min(available, st.linkRemaining) }];
-    delete e.noMatch;
+    delete e.noMatch; delete e.noMatchReason;
     delete e.loanId;
     if (kind === "sales") e.clientId = inv.clientId;
     // 連完一張後輸入框留著，可以接著 KEY 下一張（還有餘額時）
@@ -234,7 +253,7 @@ function finEntryLoan(e, ctx) {
 }
 function finReconStatus(e, ctx) {
   if (finIsTransfer(e)) return { code: "nomatch", label: "不需核對", hint: "帳戶間轉帳" };
-  if (e.noMatch) return { code: "nomatch", label: "不需核對" };
+  if (e.noMatch) return { code: "nomatch", label: e.noMatchReason ? `不需核對：${e.noMatchReason}` : "不需核對" };
   const loan = finEntryLoan(e, ctx);
   if (loan) return { code: "loan", label: `貸款：${loan.name}`, loan };
   // 發票核對和拆分明細都算「已交代清楚」的金額
@@ -726,6 +745,7 @@ function finRenderLedger() {
                 ? (nums.length && !finLedgerInvAdding.has(e.id)
                   ? `<button type="button" data-id="${finEsc(e.id)}" class="led-inv-add text-xs text-blue-600 hover:underline mt-1 whitespace-nowrap">＋ 新增發票號碼</button>`
                   : `<input class="led-inv-input border rounded px-2 py-1 text-sm w-full ${nums.length ? "mt-1" : ""} font-mono" list="${e.type === "income" ? "led-inv-sales" : "led-inv-purchase"}" data-id="${finEsc(e.id)}" autocomplete="off" aria-label="輸入發票號碼" placeholder="KEY 發票號碼後按 Enter"/>`)
+                  + `<button type="button" data-id="${finEsc(e.id)}" class="led-noinv-btn block text-xs text-slate-500 hover:text-slate-800 hover:underline mt-1 whitespace-nowrap" title="收據、沒有號碼的單據，或根本不需要發票（手續費、薪資…）">沒有發票？</button>`
                 : ""}
             </td>
             ${(() => {
@@ -963,7 +983,7 @@ function finBindLedger() {
     saveDB(db); finLedgerSel.clear(); finRenderKeepScroll();
   };
   $("led-bulk-unmatch-btn").onclick = () => {
-    selected().filter(e => !finIsTransfer(e)).forEach(e => { e.allocations = []; delete e.loanId; delete e.noMatch; });
+    selected().filter(e => !finIsTransfer(e)).forEach(e => { e.allocations = []; delete e.loanId; delete e.noMatch; delete e.noMatchReason; });
     saveDB(db); finLedgerSel.clear(); finRenderKeepScroll();
   };
   $("led-bulk-del-btn").onclick = () => {
@@ -1015,6 +1035,29 @@ function finBindLedger() {
   document.querySelectorAll(".led-inv-add").forEach(b => {
     b.onclick = () => { finLedgerInvAdding.add(b.dataset.id); finLedgerInvFocus = b.dataset.id; finRenderKeepScroll(); };
   });
+  // 沒有發票號碼時的處理：登錄成收據／其他憑證（會出現在發票登錄並連到這筆流水），或標記不需核對並寫原因
+  document.querySelectorAll(".led-noinv-btn").forEach(b => {
+    b.onclick = () => {
+      const e = db.finance.ledger.find(x => x.id === b.dataset.id);
+      if (!e) return;
+      const rest = e.amount - finEntryAllocated(e) - finEntrySplitTotal(e);
+      const choices = [];
+      if (e.type === "expense") {
+        choices.push({ label: "登錄為收據", onClick: () => finLedgerAddVoucher(e, "收據") });
+        choices.push({ label: "登錄為其他憑證", onClick: () => finLedgerAddVoucher(e, "其他") });
+      }
+      choices.push({ label: "不需核對", onClick: () => appPrompt("不需核對的原因（選填，例如：手續費、薪資、稅款、退款）", e.noMatchReason || "", reason => {
+        e.noMatch = true;
+        e.noMatchReason = String(reason || "").trim();
+        if (!e.noMatchReason) delete e.noMatchReason;
+        saveDB(db);
+        finRenderKeepScroll();
+      }) });
+      appChoice(`${e.no || e.date} 還有 ${finMoney(rest)} 沒有對到發票，要怎麼處理？\n\n`
+        + (e.type === "expense" ? "・收據／其他憑證：在發票登錄建一筆沒有號碼的單據（金額 " + finMoney(rest) + "），自動連到這筆流水，之後在發票登錄可以補資料。\n" : "")
+        + "・不需核對：例如手續費、薪資、稅款，不會出現在發票登錄，核對狀態顯示「不需核對」和原因。", choices);
+    };
+  });
   document.querySelectorAll(".led-inv-unlink").forEach(b => {
     b.onclick = () => {
       const e = db.finance.ledger.find(x => x.id === b.dataset.id);
@@ -1031,7 +1074,7 @@ function finBindLedger() {
     b.onclick = () => {
       const e = db.finance.ledger.find(x => x.id === b.dataset.id);
       if (!e) return;
-      delete e.transferGroup; delete e.autoTransfer; delete e.noMatch;
+      delete e.transferGroup; delete e.autoTransfer; delete e.noMatch; delete e.noMatchReason;
       e.category = "";
       saveDB(db); finRenderKeepScroll();
     };
@@ -1675,7 +1718,7 @@ function finBindReconcile() {
 
   $("rc-cancel-btn").onclick = goBack;
   $("rc-clear-btn").onclick = () => {
-    e.allocations = []; delete e.loanId; delete e.noMatch;
+    e.allocations = []; delete e.loanId; delete e.noMatch; delete e.noMatchReason;
     saveDB(db); finReconDraft = null; scrollToRowId = e.id; goBack();
   };
   $("rc-save-btn").onclick = () => {
@@ -1685,7 +1728,7 @@ function finBindReconcile() {
     } else if (d.mode === "loan") {
       const loan = db.finance.loans.find(l => l.id === d.loanId);
       if (!loan) return fail("請選擇貸款");
-      e.loanId = loan.id; e.allocations = []; delete e.noMatch;
+      e.loanId = loan.id; e.allocations = []; delete e.noMatch; delete e.noMatchReason;
       if (!e.category) e.category = loan.category || loan.name;
     } else {
       const cands = finReconCandidates(e, { ...d, party: "", showSettled: true });
@@ -1710,7 +1753,7 @@ function finBindReconcile() {
       // 付不足額的發票先確認（可能是先付訂金），確認後付款方式會記為部分總額
       const shortOnes = allocations.map(a => ({ a, c: cands.find(x => x.inv.id === a.invoiceId) })).filter(({ a, c }) => a.amount < c.remaining);
       const apply = () => {
-        e.allocations = allocations; delete e.loanId; delete e.noMatch;
+        e.allocations = allocations; delete e.loanId; delete e.noMatch; delete e.noMatchReason;
         saveDB(db);
         finReconDraft = null;
         scrollToRowId = e.id; goBack();
