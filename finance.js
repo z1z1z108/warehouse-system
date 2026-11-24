@@ -339,7 +339,7 @@ function finInvoiceSearchText(i) {
 // 日期預設只看今年（1/1～12/31），由 1/1 開始往下排；要看其他年份就在日期欄的 ▼ 改
 function finInvThisYear() { const y = new Date().getFullYear(); return { dateFrom: `${y}-01-01`, dateTo: `${y}-12-31` }; }
 function finInvNewColFilter() {
-  return { noQuery: "", ...finInvThisYear(), numberQuery: "", categories: [], itemQuery: "", statuses: [], parties: [], noteQuery: "" };
+  return { noQuery: "", ...finInvThisYear(), numberQuery: "", categories: [], itemQuery: "", statuses: [], parties: [], payees: [], noteQuery: "" };
 }
 const finInvColFilters = { purchase: finInvNewColFilter(), sales: finInvNewColFilter() };
 // 各欄要拿來篩選的值（清單型的值用 encodeURIComponent 當選項 id，名稱有 & 或引號也不會出錯）
@@ -351,11 +351,12 @@ function finInvColValues(i, st, pays) {
     item: (i.items || []).map(it => it.name).join(" "),
     status: st[i.id].status,
     party: finPartyName(i),
+    payee: i.payee || "（未填）",
   };
 }
 function finInvColActive(cf) {
   const year = finInvThisYear();   // 預設的今年不算「有篩選」，清除按鈕只在改過時出現
-  return !!(cf.noQuery || cf.dateFrom !== year.dateFrom || cf.dateTo !== year.dateTo || cf.numberQuery || cf.itemQuery || cf.noteQuery || cf.categories.length || cf.statuses.length || cf.parties.length);
+  return !!(cf.noQuery || cf.dateFrom !== year.dateFrom || cf.dateTo !== year.dateTo || cf.numberQuery || cf.itemQuery || cf.noteQuery || cf.categories.length || cf.statuses.length || cf.parties.length || (cf.payees || []).length);
 }
 function finFilteredInvoices(st, skipColumnFilters) {
   const f = finInvFilter;
@@ -376,7 +377,7 @@ function finFilteredInvoices(st, skipColumnFilters) {
     const v = finInvColValues(i, st, pays);
     return has(v.no, cf.noQuery) && has(i.number, cf.numberQuery) && has(v.item, cf.itemQuery) && has(i.note, cf.noteQuery)
       && (!cf.dateFrom || i.date >= cf.dateFrom) && (!cf.dateTo || i.date <= cf.dateTo)
-      && inList(v.category, cf.categories) && inList(v.status, cf.statuses) && inList(v.party, cf.parties);
+      && inList(v.category, cf.categories) && inList(v.status, cf.statuses) && inList(v.party, cf.parties) && inList(v.payee, cf.payees || []);
   });
 }
 
@@ -708,6 +709,7 @@ function finRenderInvoices() {
           <th class="${stickyTh} text-right">未稅</th><th class="${stickyTh} text-right">稅額</th><th class="${stickyTh} text-right">含稅總額</th><th class="${stickyTh} text-right">已核對</th>
           ${colTh("statuses", "狀態", "list", { options: listOptions(v => v.status), selected: colF.statuses })}
           ${colTh("parties", isSales ? "客戶" : "廠商", "list", { options: listOptions(v => v.party), selected: colF.parties })}
+          ${isSales ? "" : colTh("payees", "收款方", "list", { options: listOptions(v => v.payee), selected: colF.payees || (colF.payees = []) })}
           ${colTh("noteQuery", "備註", "text", { value: colF.noteQuery })}
           <th class="${stickyTh} right-0 z-30 border-l"></th>
         </tr>
@@ -727,18 +729,19 @@ function finRenderInvoices() {
             <td class="px-3 py-2 text-right whitespace-nowrap">${finMoney(st[i.id].paid)}</td>
             <td class="px-3 py-2">${finStatusBadge(st[i.id].status)}</td>
             <td class="px-3 py-2">${finEsc(finPartyName(i))}</td>
+            ${isSales ? "" : `<td class="px-3 py-2">${finEsc(i.payee) || `<span class="text-slate-300">-</span>`}</td>`}
             <td class="px-3 py-2 text-slate-500">${finEsc(i.note) || "-"}</td>
             <td class="px-3 py-2 text-right whitespace-nowrap sticky right-0 bg-white border-l"><button type="button" class="inv-toggle text-xs text-blue-600 hover:underline mr-2" aria-expanded="${open}"><span class="inv-chevron">${open ? "▾" : "▸"}</span> 明細${(i.items || []).length ? `（${i.items.length}）` : ""}</button><button data-id="${finEsc(i.id)}" class="inv-edit-btn text-slate-600 hover:underline text-xs mr-2">編輯</button><button data-id="${finEsc(i.id)}" class="inv-del-btn text-rose-500 hover:underline text-xs">刪除</button></td>
           </tr>
           <tr class="${open ? "" : "hidden"} detail-row">
-            <td colspan="14" class="px-4 py-3">${finInvDetailHtml(i, pays[i.id])}</td>
+            <td colspan="${isSales ? 14 : 15}" class="px-4 py-3">${finInvDetailHtml(i, pays[i.id])}</td>
           </tr>
-          ${isEdit ? `<tr class="edit-row"><td colspan="14" class="px-4 py-4">
+          ${isEdit ? `<tr class="edit-row"><td colspan="${isSales ? 14 : 15}" class="px-4 py-4">
             <div class="inline-edit-box sticky left-0">
               <p class="font-semibold text-sm text-slate-700 mb-3">編輯發票：${finEsc(editing.number) || "未填號碼"}</p>
               ${formFields}
             </div>
-          </td></tr>` : ""}`; }).join("") || `<tr><td colspan="14" class="px-4 py-8 text-center text-slate-400">${isSales ? "尚無銷項發票" : "尚無發票"}</td></tr>`}
+          </td></tr>` : ""}`; }).join("") || `<tr><td colspan="${isSales ? 14 : 15}" class="px-4 py-8 text-center text-slate-400">${isSales ? "尚無銷項發票" : "尚無發票"}</td></tr>`}
       </tbody>
     </table>
   </div>`;
