@@ -493,3 +493,283 @@ function finBindAcctPaste() {
     }, { okLabel: "復原", danger: true });
   });
 }
+
+// ============================================================
+// 從公司原本的帳戶紀錄整批匯入流水帳
+// ============================================================
+// 帳戶紀錄每列：匯款編號、匯款日期、項目類別、收款方、內容/發票號碼（三欄：內容、單號、發票號碼）、銷項、進項、互匯未實際扣、手續費、備註。
+// 編號空白的列是上一筆匯款的明細（例如員工報帳一次匯一筆，裡面很多張發票）。
+// - 每個匯款編號建一筆流水，沿用原本的編號（T11001…），之後系統新編的號碼會接在後面
+// - 支出：金額＝明細合計（「手續費」明細不算，記到流水的手續費欄，加上手續費欄的金額）
+// - 支出明細有發票號碼、收據、未打統編等憑證文字，或一筆匯款有多列明細時，每列登錄成一張進項發票，
+//   支出單號填匯款編號 → 自動連到這筆流水（data.js autoLinkByExpenseNo）
+// - 發票登錄已經有同號碼的發票就不重建；還沒填支出單號、也還沒連結的會補上，一起連結
+// - 流水帳已經有同編號的流水不重建；同帳戶、同日期、同金額的流水視為可能重複，預設不匯入
+let finLedImport = { open: false, text: "", year: String(new Date().getFullYear()), accountId: "", groups: null, msg: "", last: null, onlyCat: true };
+
+function finParseLedImport(text, year) {
+  const money = v => { const m = String(v || "").replace(/[$,\s元NT]/g, ""); return /^-?\d+(\.\d+)?$/.test(m) ? Math.round(Number(m)) : 0; };
+  const isEntryNo = v => /^[A-Z]+\d{4,}$/i.test(String(v || "").trim());
+  const toDate = v => {
+    let m = String(v || "").trim().match(/^(\d{1,2})月(\d{1,2})日$/);
+    if (m) return `${year}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
+    m = String(v || "").trim().match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+    return m ? `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}` : "";
+  };
+  let rows = finParseTSV(text);
+  // 欄位位置：有標題列就照標題找，沒有就用帳戶紀錄的預設位置
+  let col = { no: 0, date: 1, cat: 2, payee: 3, content: 4, ref: 5, inv: 6, out: 7, in: 8, xfer: 9, fee: 10, note: 11 };
+  const head = rows.findIndex(r => r.some(c => c.includes("匯款編號")));
+  if (head >= 0) {
+    const h = rows[head];
+    const at = (word, fallback) => { const i = h.findIndex(c => c.includes(word)); return i >= 0 ? i : fallback; };
+    const content = at("內容", col.content);
+    col = { no: at("匯款編號", 0), date: at("日期", 1), cat: at("類別", 2), payee: at("收款方", 3), content, ref: content + 1, inv: content + 2,
+      out: at("銷項", 7), in: at("進項", 8), xfer: at("互匯", 9), fee: at("手續費", 10), note: at("備註", 11) };
+    rows = rows.slice(head + 1);
+  }
+  const groups = [];
+  let g = null;
+  rows.forEach(c => {
+    const get = k => String(c[col[k]] ?? "").trim();
+    if (isEntryNo(get("no"))) { g = { no: get("no").toUpperCase(), date: toDate(get("date")), rows: [] }; groups.push(g); }
+    if (!g) return;
+    let content = get("content"), ref = get("ref"), inv = get("inv");
+    if (!inv && /^[A-Z]{2}-?\d{8}$/i.test(ref)) { inv = ref; ref = ""; }
+    const r = { category: get("cat"), payee: get("payee"), content, ref, inv, out: money(get("out")), in: money(get("in")), xfer: money(get("xfer")), fee: money(get("fee")), note: get("note") };
+    if (!r.out && !r.in && !r.xfer && !r.fee && !r.content && !r.inv) return;
+    g.rows.push(r);
+  });
+  return groups.filter(x => x.rows.length);
+}
+
+// 把解析出來的每筆匯款整理成要建的流水和發票，並判斷重複
+function finLedImportPlan(groups, defaultAccountId, onlyCat) {
+  const norm = s => String(s || "").toUpperCase().replace(/[\s-]/g, "");
+  const isInvNo = v => /^[A-Z]{2}-?\d{8}$/i.test(String(v || "").trim());
+  const accounts = db.finance.accounts.filter(a => a.code).sort((a, b) => b.code.length - a.code.length);
+  const invByNo = {};
+  db.finance.invoices.filter(i => i.kind === "purchase" && i.number).forEach(i => { invByNo[norm(i.number)] = i; });
+  const linkedIds = new Set(finLedgerLinks(db.finance).map(l => l.invoiceId));
+  return groups.map(g => {
+    const first = g.rows[0];
+    const acct = accounts.find(a => g.no.startsWith(a.code) && /^\d{4,}$/.test(g.no.slice(a.code.length)));
+    const accountId = acct ? acct.id : defaultAccountId;
+    const income = g.rows.some(r => r.in) && !g.rows.some(r => r.out);
+    const xfer = g.rows.some(r => r.xfer) && !g.rows.some(r => r.out || r.in);
+    const multi = g.rows.length > 1;
+    const feeRows = multi ? g.rows.filter(r => r.category === "手續費" && r.out && !r.inv) : [];
+    const items = g.rows.filter(r => !feeRows.includes(r));
+    const fee = g.rows.reduce((s, r) => s + r.fee, 0) + feeRows.reduce((s, r) => s + r.out, 0);
+    const amount = xfer ? Math.abs(g.rows.reduce((s, r) => s + r.xfer, 0)) : income ? items.reduce((s, r) => s + r.in, 0) : items.reduce((s, r) => s + r.out, 0);
+    const type = xfer ? (g.rows.reduce((s, r) => s + r.xfer, 0) < 0 ? "expense" : "income") : income ? "income" : "expense";
+    const entry = {
+      no: g.no, date: g.date, accountId, type, amount, fee, xfer,
+      category: xfer ? FIN_TRANSFER_CATEGORY : first.category, counterparty: first.payee,
+      content: multi ? "" : first.content, note: [multi ? "" : first.ref, first.note].filter(Boolean).join(" "),
+    };
+    // 這筆匯款在系統裡的狀態
+    const sameNo = db.finance.ledger.find(e => (e.no || "").toUpperCase() === g.no);
+    // 同編號而且同日期才當成同一筆（金額不同只提醒）；編號被系統編給了別天的流水就是衝突，不能匯入
+    const existing = sameNo && sameNo.date === g.date ? sameNo : null;
+    const conflict = sameNo && !existing ? sameNo : null;
+    // 已有的流水要調整什麼：類別和紀錄不同就改成紀錄的；收款方、內容空白就帶入
+    const catChange = existing && entry.category && entry.category !== (existing.category || "") && !finIsTransfer(existing) ? { from: existing.category || "", to: entry.category } : null;
+    const fills = existing ? ["counterparty", "content"].filter(k => !existing[k] && entry[k]) : [];
+    const amountDiff = existing && existing.amount !== amount ? existing.amount : null;
+    const dup = !existing && db.finance.ledger.find(e => e.accountId === accountId && e.date === g.date && e.amount === amount && e.type === type);
+    // 要登錄的發票（只有支出）
+    const invRows = type === "expense" && !xfer ? items.filter(r => r.out && (r.inv || multi)).map(r => {
+      const v = r.inv;
+      const same = isInvNo(v) && invByNo[norm(v)];
+      let action = "new";
+      if (same) action = String(same.expenseNo || "").toUpperCase().split(/[、,\s]+/).includes(g.no) ? "same" : !same.expenseNo && !linkedIds.has(same.id) ? "fill" : "skip";
+      return { r, action, existing: same || null };
+    }) : [];
+    const canNew = !existing && !conflict && !dup && !!accountId && !!g.date && amount > 0;
+    const include = existing ? !!(catChange || fills.length || (!onlyCat && invRows.some(x => x.action === "new" || x.action === "fill"))) : !onlyCat && canNew;
+    return { g, entry, existing, conflict, dup, invRows, catChange, fills, amountDiff, canNew, include };
+  });
+}
+
+function finRenderLedImport() {
+  const st = finLedImport;
+  const plan = st.groups ? finLedImportPlan(st.groups, st.accountId, st.onlyCat) : [];
+  const accounts = db.finance.accounts;
+  const chosen = plan.filter((p, i) => !p.conflict && ((st.include || {})[i] ?? p.include));
+  const statusOf = p => p.conflict ? `<span class="text-rose-600">編號衝突：系統的 ${finEsc(p.conflict.no)} 是另一筆（${finEsc(p.conflict.date)} ${finMoney(p.conflict.amount)}）</span>`
+    : p.existing ? [
+        p.catChange ? `<span class="text-emerald-700">類別：${finEsc(p.catChange.from || "（空白）")} → ${finEsc(p.catChange.to)}</span>` : `<span class="text-slate-400">類別相同</span>`,
+        p.fills.length ? `<span class="text-emerald-700">補${p.fills.map(k => ({ counterparty: "收款方", content: "內容" }[k])).join("、")}</span>` : "",
+        p.amountDiff !== null ? `<span class="text-amber-600">金額不同（系統 ${finMoney(p.amountDiff)}）</span>` : "",
+      ].filter(Boolean).join("　")
+    : st.onlyCat ? `<span class="text-slate-400">流水帳沒有這筆，略過</span>`
+    : !p.entry.accountId ? `<span class="text-rose-600">找不到帳戶</span>`
+    : !p.g.date ? `<span class="text-rose-600">日期讀不到</span>`
+    : p.dup ? `<span class="text-amber-600">可能重複（已有 ${finEsc(p.dup.no || p.dup.date)}）</span>`
+    : `<span class="text-emerald-700">新增流水</span>`;
+  const invSummary = p => {
+    if (!p.invRows.length) return `<span class="text-slate-300">-</span>`;
+    const c = k => p.invRows.filter(x => x.action === k).length;
+    return [c("new") && `新登錄 ${c("new")}`, c("fill") && `補支出單號 ${c("fill")}`, c("same") && `已登錄 ${c("same")}`, c("skip") && `<span class="text-amber-600">已連別筆 ${c("skip")}</span>`].filter(Boolean).join("、");
+  };
+  return `
+  <div class="bg-white rounded-xl shadow-sm ${st.open ? "p-6" : "px-6 py-3"} mb-4">
+    <button type="button" id="li-toggle" class="w-full flex items-center justify-between text-left font-semibold text-sm text-slate-700" aria-expanded="${st.open}">
+      <span>📋 從帳戶紀錄調整類別／整批匯入流水帳</span>
+      <span class="text-xs font-normal text-slate-500">${st.open ? "▾ 收起" : "▸ 展開"}</span>
+    </button>
+    ${st.last ? `<div class="flex flex-wrap items-center gap-3 text-sm bg-slate-50 text-slate-700 border rounded-lg px-3 py-2 mt-3"><span>${finEsc(st.last.label)}</span><button id="li-undo" class="text-xs text-rose-600 hover:underline">復原這次匯入</button></div>` : ""}
+    ${!st.open ? "" : `
+    <p class="text-xs text-slate-500 mt-3">在 Excel 選取公司原本的帳戶紀錄（含或不含標題列都可以：匯款編號、匯款日期、項目類別、收款方、內容/發票號碼、銷項、進項、互匯未實際扣、手續費、備註）複製後貼上。
+      用匯款編號對到流水帳裡同一天的那筆，<b>項目類別改成紀錄上的類別</b>，收款方、內容空白的也會帶入。</p>
+    <label class="flex items-start gap-2 text-sm mt-3 cursor-pointer">
+      <input type="checkbox" id="li-only-cat" class="mt-1" ${st.onlyCat ? "checked" : ""}/>
+      <span>只調整流水帳已有的流水（不新增流水、不登錄發票）
+        <span class="block text-xs text-slate-500">取消勾選就會整批匯入：流水帳沒有的匯款會新增一筆並沿用原本的編號，有發票號碼的明細登錄到發票登錄並自動連結，「手續費」明細記到流水的手續費欄。</span></span>
+    </label>
+    <div class="flex flex-wrap items-end gap-3 mt-3">
+      <label class="text-xs text-slate-500">日期年份
+        <input id="li-year" type="number" min="2000" max="2100" value="${finEsc(st.year)}" class="block border rounded-lg px-3 py-1.5 text-sm mt-1 w-28"/>
+      </label>
+      <label class="text-xs text-slate-500">帳戶（編號對不到帳戶代碼時用）
+        <select id="li-account" class="block border rounded-lg px-3 py-1.5 text-sm mt-1"><option value="">請選擇</option>${accounts.map(a => `<option value="${finEsc(a.id)}" ${a.id === st.accountId ? "selected" : ""}>${finEsc(a.name)}${a.code ? `（${finEsc(a.code)}）` : ""}</option>`).join("")}</select>
+      </label>
+    </div>
+    <textarea id="li-text" rows="5" class="w-full border rounded-lg px-3 py-2 text-xs font-mono mt-3" placeholder="在這裡貼上（Ctrl+V）">${finEsc(st.text)}</textarea>
+    <div class="flex items-center gap-3 mt-2">
+      <button type="button" id="li-preview" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">預覽</button>
+      ${st.msg ? `<span class="text-xs text-rose-600">${finEsc(st.msg)}</span>` : ""}
+    </div>
+    ${plan.length ? `
+    <p class="text-sm mt-4 mb-2">共 ${plan.length} 筆匯款：流水帳已有 ${plan.filter(p => p.existing).length} 筆（其中 ${plan.filter(p => p.catChange).length} 筆類別要改）${st.onlyCat ? "" : `，新增 ${chosen.filter(p => !p.existing).length} 筆`}${plan.some(p => p.conflict) ? `，<span class="text-rose-600">編號衝突 ${plan.filter(p => p.conflict).length} 筆</span>` : ""}。勾選 ${chosen.length} 筆要處理。</p>
+    <div class="overflow-auto border rounded-lg" style="max-height: 60vh">
+      <table class="grid-table w-full text-sm">
+        <thead class="bg-slate-100 text-slate-600 text-left sticky top-0 z-10"><tr>
+          <th class="px-2 py-1.5"></th><th class="px-2 py-1.5">匯款編號</th><th class="px-2 py-1.5">日期</th><th class="px-2 py-1.5">帳戶</th><th class="px-2 py-1.5">類別</th><th class="px-2 py-1.5">收款方</th><th class="px-2 py-1.5">內容</th>
+          <th class="px-2 py-1.5 text-right">支出</th><th class="px-2 py-1.5 text-right">收入</th><th class="px-2 py-1.5 text-right">手續費</th><th class="px-2 py-1.5">明細／發票</th><th class="px-2 py-1.5">處理</th>
+        </tr></thead>
+        <tbody>${plan.map((p, i) => { const on = (st.include || {})[i] ?? p.include; const e = p.entry; return `
+          <tr class="data-row">
+            <td class="px-2 py-1.5 text-center"><input type="checkbox" class="li-inc" data-idx="${i}" ${on ? "checked" : ""} ${p.conflict || (p.existing && !p.catChange && !p.fills.length && (st.onlyCat || !p.invRows.length)) || (!p.existing && (st.onlyCat || !p.canNew)) ? "disabled" : ""} aria-label="匯入 ${finEsc(e.no)}"/></td>
+            <td class="px-2 py-1.5 font-mono whitespace-nowrap">${finEsc(e.no)}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap text-slate-500">${finEsc(e.date)}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap">${e.accountId ? finEsc(finAccountName(e.accountId)) : `<span class="text-rose-600">未選</span>`}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap">${finEsc(e.category) || `<span class="text-amber-600">未分類</span>`}</td>
+            <td class="px-2 py-1.5">${finEsc(e.counterparty)}</td>
+            <td class="px-2 py-1.5 text-slate-500">${finEsc(e.content || (p.g.rows.length > 1 ? `明細 ${p.g.rows.length} 列` : ""))}</td>
+            <td class="px-2 py-1.5 text-right whitespace-nowrap text-rose-600">${e.type === "expense" ? finMoney(e.amount) : ""}</td>
+            <td class="px-2 py-1.5 text-right whitespace-nowrap text-emerald-600">${e.type === "income" ? finMoney(e.amount) : ""}</td>
+            <td class="px-2 py-1.5 text-right whitespace-nowrap">${e.fee ? finMoney(e.fee) : ""}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap text-xs">${invSummary(p)}</td>
+            <td class="px-2 py-1.5 whitespace-nowrap text-xs">${statusOf(p)}</td>
+          </tr>`; }).join("")}
+        </tbody>
+      </table>
+    </div>
+    <div class="flex items-center gap-2 mt-4">
+      <button type="button" id="li-go" class="bg-slate-800 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-slate-700" ${chosen.length ? "" : "disabled"}>確認處理 ${chosen.length} 筆</button>
+      <button type="button" id="li-cancel" class="border rounded-lg px-4 py-2 text-sm hover:bg-slate-100">取消</button>
+    </div>` : ""}`}
+  </div>`;
+}
+
+function finBindLedImport() {
+  const st = finLedImport;
+  const $ = id => document.getElementById(id);
+  if (!$("li-toggle")) return;
+  $("li-toggle").onclick = () => { st.open = !st.open; finRenderKeepScroll(); };
+  $("li-text")?.addEventListener("input", () => { st.text = $("li-text").value; });
+  $("li-year")?.addEventListener("input", () => { st.year = $("li-year").value; });
+  $("li-account")?.addEventListener("change", () => { st.accountId = $("li-account").value; if (st.groups) finRenderKeepScroll(); });
+  $("li-only-cat")?.addEventListener("change", () => { st.onlyCat = $("li-only-cat").checked; st.include = {}; finRenderKeepScroll(); });
+  $("li-preview")?.addEventListener("click", () => {
+    st.text = $("li-text").value;
+    const year = /^\d{4}$/.test(st.year) ? st.year : String(new Date().getFullYear());
+    const groups = finParseLedImport(st.text, year);
+    st.groups = groups.length ? groups : null;
+    st.include = {};
+    st.msg = groups.length ? "" : "沒有讀到匯款編號（例如 T11001）開頭的資料列，請確認複製的範圍";
+    finRenderKeepScroll();
+  });
+  document.querySelectorAll(".li-inc").forEach(cb => { cb.onchange = () => { st.include = { ...(st.include || {}), [cb.dataset.idx]: cb.checked }; finRenderKeepScroll(); }; });
+  $("li-cancel")?.addEventListener("click", () => { Object.assign(st, { text: "", groups: null, include: {}, msg: "" }); finRenderKeepScroll(); });
+  $("li-go")?.addEventListener("click", () => {
+    const plan = finLedImportPlan(st.groups || [], st.accountId, st.onlyCat);
+    const batch = finId("lib");
+    const undo = { batch, filled: [], changed: [] };
+    let entries = 0, invs = 0, filled = 0, recat = 0;
+    let seq = finNextSeq();
+    const vendorsSeen = new Set();
+    const madeNos = new Set();
+    const recatEntries = [];
+    plan.forEach((p, i) => {
+      if (p.conflict || !((st.include || {})[i] ?? p.include)) return;
+      const e = p.entry;
+      if (p.existing) {
+        // 已有的流水：類別改成紀錄上的，收款方、內容空白就帶入（記下原值，復原時改回來）
+        const x = p.existing;
+        if (p.catChange || p.fills.length) undo.changed.push({ id: x.id, category: x.category || "", counterparty: x.counterparty || "", content: x.content || "" });
+        if (p.catChange) { x.category = p.catChange.to; recat++; recatEntries.push(x); }
+        p.fills.forEach(k => { x[k] = e[k]; });
+      }
+      if (st.onlyCat) return;   // 只調整類別：不新增流水、不登錄發票
+      if (!p.existing) {
+        const entry = { id: finId("led"), seq: seq++, no: e.no, accountId: e.accountId, date: e.date, type: e.type, category: e.category, amount: e.amount, fee: e.fee,
+          counterparty: e.counterparty, content: e.content, note: e.note, allocations: [], source: "manual", importBatch: batch };
+        if (e.xfer) Object.assign(entry, { noMatch: true, transferGroup: finId("tg") });
+        db.finance.ledger.push(entry);
+        entries++;
+      }
+      const multi = p.g.rows.length > 1;
+      p.invRows.forEach(({ r, action, existing }) => {
+        if (action === "fill") { existing.expenseNo = e.no; undo.filled.push(existing.id); filled++; return; }
+        if (action !== "new") return;
+        const v = String(r.inv || "").trim();
+        const isNo = /^[A-Z]{2}-?\d{8}$/i.test(v);
+        if (isNo) { const k = v.toUpperCase().replace(/[\s-]/g, ""); if (madeNos.has(k)) return; madeNos.add(k); }   // 同一次貼上重複的號碼只建一張
+        const voucherType = isNo ? "電子發票" : v === "收據" ? "收據" : "其他";
+        const taxed = finSplitIsTaxed(voucherType);
+        const net = taxed ? Math.round(r.out / (1 + FIN_TAX_RATE)) : r.out;
+        // 一筆匯款多列明細（員工報帳）時，收款方欄是員工；只有一列時收款方就是開發票的廠商
+        const vendor = multi ? "" : (r.payee || e.counterparty || "");
+        const payee = multi ? (p.g.rows[0].payee || "") : "";
+        if (vendor) vendorsSeen.add(vendor);
+        db.finance.invoices.push({
+          id: finId("inv"), kind: "purchase", date: e.date, number: isNo ? v.toUpperCase() : "", voucherType, taxType: taxed ? "taxable" : "zero",
+          items: [{ name: r.content || r.category || e.category || `${voucherType}支出`, qty: 1, price: net, amount: net }],
+          amount: net, tax: r.out - net, total: r.out, clientId: "", vendor: vendor ? finCanonicalVendor(vendor) : "", category: r.category || e.category || "",
+          project: "", payee, payMethod: FIN_PAY_UNPAID, payDate: "", expenseNo: e.no,
+          note: [r.ref, !isNo && v && v !== "收據" ? `憑證：${v}` : ""].filter(Boolean).join(" "), importBatch: batch,
+        });
+        invs++;
+      });
+    });
+    vendorsSeen.forEach(v => finRememberVendor(finCanonicalVendor(v)));
+    saveDB(db);   // 存檔時發票依支出單號自動連到流水
+    const parts = [recat && `調整 ${recat} 筆流水的類別`, undo.changed.length > recat && `補資料 ${undo.changed.length - recat} 筆`, entries && `新增 ${entries} 筆流水`, invs && `登錄 ${invs} 張發票`, filled && `補上 ${filled} 張發票的支出單號`].filter(Boolean);
+    st.last = { ...undo, label: `${parts.join("、") || "沒有需要變更的資料"}（${todayISO()}）` };
+    Object.assign(st, { text: "", groups: null, include: {}, msg: "" });
+    render();
+  });
+  $("li-undo")?.addEventListener("click", () => {
+    const u = st.last;
+    appConfirm("確定要復原嗎？調整過的類別、收款方、內容會改回原本的；這次新增的流水和發票會刪除，補上的支出單號會清掉。", () => {
+      (u.changed || []).forEach(c => { const e = db.finance.ledger.find(x => x.id === c.id); if (e) Object.assign(e, { category: c.category, counterparty: c.counterparty, content: c.content }); });
+      const invIds = new Set(db.finance.invoices.filter(i => i.importBatch === u.batch).map(i => i.id));
+      const touched = new Set([...invIds, ...u.filled]);
+      db.finance.ledger = db.finance.ledger.filter(e => e.importBatch !== u.batch);
+      db.finance.ledger.forEach(e => { if ((e.allocations || []).some(a => touched.has(a.invoiceId))) e.allocations = e.allocations.filter(a => !touched.has(a.invoiceId)); });
+      db.finance.invoices = db.finance.invoices.filter(i => !invIds.has(i.id));
+      u.filled.forEach(id => {
+        const inv = db.finance.invoices.find(i => i.id === id);
+        if (!inv) return;
+        inv.expenseNo = "";
+        delete inv.autoLinkedEntry; delete inv.autoLinkSkip;
+        if (inv.prePay) inv.prePay.expenseNo = "";
+      });
+      st.last = null;
+      finSave();
+    }, { okLabel: "復原", danger: true });
+  });
+}

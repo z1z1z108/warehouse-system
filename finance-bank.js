@@ -631,6 +631,8 @@ function finRenderLedger() {
     </details>
   </div>
 
+  ${typeof finRenderLedImport === "function" ? finRenderLedImport() : ""}
+
   <div class="bg-white rounded-xl shadow-sm p-4 mb-3">
     <div class="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
       <div>
@@ -671,6 +673,7 @@ function finRenderLedger() {
       <div class="flex gap-2">
         <button id="led-f-clear" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">清除篩選</button>
         <button id="led-export-btn" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100">📊 匯出 CSV</button>
+        <button id="led-renumber-btn" class="border rounded-lg text-sm px-3 py-1.5 hover:bg-slate-100" title="${f.account && f.month ? "把這個帳戶這個月的流水編號，依匯款日期重新排" : "先在上方選帳戶和月份"}">🔢 依匯款日期重新編號</button>
       </div>
     </div>
   </div>
@@ -943,9 +946,23 @@ function finBindLedger() {
   bf("led-f-account", "account"); bf("led-f-type", "type"); bf("led-f-category", "category"); bf("led-f-recon", "recon"); bf("led-f-month", "month"); bf("led-f-q", "q");
   $("led-f-clear").onclick = () => { finLedgerFilter = { account: "", type: "", category: "", recon: "", month: "", q: "" }; finLedColFilter = finLedNewColFilter(); resetPage(); render(); };
   $("led-col-clear")?.addEventListener("click", () => { finLedColFilter = finLedNewColFilter(); resetPage(); render(); });
+  if (typeof finBindLedImport === "function") finBindLedImport();
   bindColumnFilters();
   $("led-prev")?.addEventListener("click", () => { if (finLedgerPage > 0) { finLedgerPage--; render(); document.querySelector("main").scrollTop = 0; } });
   $("led-next")?.addEventListener("click", () => { finLedgerPage++; render(); document.querySelector("main").scrollTop = 0; });
+  $("led-renumber-btn").onclick = () => {
+    if (!finLedgerFilter.account || !finLedgerFilter.month) return alert("請先在上方篩選選好「帳戶」和「月份」，再按依匯款日期重新編號（一次重排一個帳戶的一個月）。");
+    const plan = finRenumberPlan(finLedgerFilter.account, finLedgerFilter.month);
+    if (plan.error) return alert(plan.error);
+    const changes = plan.items.filter(x => x.from !== x.to);
+    if (!changes.length) return alert(`${finAccountName(finLedgerFilter.account)} ${finLedgerFilter.month} 的流水編號已經是依匯款日期排列，不用調整。`);
+    const list = changes.slice(0, 12).map(x => `${x.from || "（無）"} → ${x.to}　${x.e.date}　${finMoney(x.e.amount)}`).join("\n");
+    appConfirm(`依匯款日期重新編號：${finAccountName(finLedgerFilter.account)} ${finLedgerFilter.month}，共 ${changes.length} 筆編號會改變：\n\n${list}${changes.length > 12 ? `\n…其他 ${changes.length - 12} 筆` : ""}\n\n連結的發票（支出單號）和拆分明細編號會跟著改。確定要重新編號嗎？`, () => {
+      finApplyRenumber(plan);
+      saveDB(db);
+      render();
+    }, { okLabel: "重新編號" });
+  };
   $("led-export-btn").onclick = () => {
     const ctx = finReconContext();
     const invById = Object.fromEntries(db.finance.invoices.map(i => [i.id, i]));
@@ -2323,4 +2340,47 @@ function finRenderLoanDetail() {
 }
 function finBindLoanDetail() {
   document.querySelectorAll(".ld-recon-btn").forEach(b => { b.onclick = () => finOpenReconcile(b.dataset.id); });
+}
+
+// ============================================================
+// 依匯款日期重新編號（流水編號平常編上就固定，只有按這個按鈕才重排）
+// ============================================================
+// 一次重排一個帳戶的一個月：依匯款日期由早到晚（同一天照原本的順序）編成 代碼＋月份＋01、02…
+// 別的月份（例如去年同月）已經用掉的號碼會跳過，不會重複。
+function finRenumberPlan(accountId, month) {
+  const f = db.finance;
+  const acct = f.accounts.find(a => a.id === accountId);
+  if (!acct || !acct.code) return { error: "這個帳戶還沒有帳戶代碼，請先到「銀行帳戶」設定代碼。" };
+  const mm = month.slice(5, 7);
+  const prefix = acct.code + mm;
+  const group = f.ledger.filter(e => e.accountId === accountId && finMonthOf(e.date) === month)
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.no || "").localeCompare(b.no || "", "en", { numeric: true }) || (a.seq || 0) - (b.seq || 0));
+  if (!group.length) return { error: `${acct.name} ${month} 沒有流水。` };
+  const ids = new Set(group.map(e => e.id));
+  const usedElsewhere = new Set(f.ledger.filter(e => e.no && !ids.has(e.id)).map(e => e.no));
+  let n = 0;
+  const items = group.map(e => {
+    let to;
+    do { n++; to = prefix + String(n).padStart(2, "0"); } while (usedElsewhere.has(to));
+    return { e, from: e.no || "", to };
+  });
+  return { accountId, month, items, counterKey: `${acct.code}|${month}`, last: n };
+}
+function finApplyRenumber(plan) {
+  const f = db.finance;
+  const map = new Map(plan.items.filter(x => x.from && x.from !== x.to).map(x => [x.from, x.to]));
+  plan.items.forEach(({ e, from, to }) => {
+    e.no = to;
+    // 拆分明細編號（T11005-1…）換成新的流水編號開頭
+    (e.splits || []).forEach(x => { if (from && x.no && x.no.startsWith(from + "-")) x.no = to + x.no.slice(from.length); });
+  });
+  // 發票上填的支出單號（含連結前自己填的那份）也換成新編號，自動連結才不會連錯筆
+  const swap = s => String(s || "").split("、").map(t => map.get(t.trim()) || t).join("、");
+  f.invoices.forEach(inv => {
+    if (inv.expenseNo) inv.expenseNo = swap(inv.expenseNo);
+    if (inv.prePay && inv.prePay.expenseNo) inv.prePay.expenseNo = swap(inv.prePay.expenseNo);
+    if (inv.autoLinkSkip && map.has(inv.autoLinkSkip)) inv.autoLinkSkip = map.get(inv.autoLinkSkip);
+  });
+  f.noCounters = f.noCounters || {};
+  f.noCounters[plan.counterKey] = Math.max(f.noCounters[plan.counterKey] || 0, plan.last);
 }
