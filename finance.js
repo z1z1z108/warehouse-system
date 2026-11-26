@@ -148,9 +148,13 @@ function finDownloadCSV(filename, rows) {
   link.click();
 }
 function finStatusBadge(label) {
-  // 未付／未收紅色、部分黃色、不支出灰色，其餘（已付、已收、現金、轉帳、自動扣款等付款方式）綠色
-  const cls = label === FIN_PAY_NONE ? "bg-slate-100 text-slate-500" : /^部分/.test(label) ? "bg-amber-100 text-amber-700" : !label || /^未/.test(label) ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700";
-  return `<span class="px-2 py-0.5 rounded-full text-xs whitespace-nowrap ${cls}">${label}</span>`;
+  // 未付／未收紅色、轉帳和已付／已收綠色、現金藍色、不支出灰色、部分總額（部分付款／收款）咖啡色，其他付款方式（自動扣款等）綠色
+  const style = label === FIN_PAY_NONE ? "background:#eef1f4;color:#64748b"
+    : label === FIN_PAY_CASH ? "background:#dbeafe;color:#1d4ed8"
+    : /^部分/.test(label) ? "background:#efe2d3;color:#7a4a22"
+    : !label || /^未/.test(label) ? "background:#ffe4e6;color:#be123c"
+    : "background:#d1fae5;color:#047857";
+  return `<span class="inline-flex items-center justify-center min-w-[5.75rem] px-3 py-2 rounded-full text-[17px] font-medium leading-none whitespace-nowrap" style="${style}">${label}</span>`;
 }
 function finBindFilter(id, obj, key, afterChange) {
   const el = document.getElementById(id);
@@ -374,23 +378,24 @@ function finMonthBar(scope, items, cf, unit) {
   const stat = list => ({ n: list.length, out: list.filter(x => x.kind !== "in").reduce((s, x) => s + x.amount, 0), inn: list.filter(x => x.kind === "in").reduce((s, x) => s + x.amount, 0) });
   const money = s => [s.out && `${unit === "invoice" ? "" : "支 "}${finMoney(s.out)}`, s.inn && `收 ${finMoney(s.inn)}`].filter(Boolean).join("／");
   const lastDay = m => `${year}-${m}-${String(new Date(Number(year), Number(m), 0).getDate()).padStart(2, "0")}`;
-  const btn = (from, to, on, inner, title, dim) => `<button type="button" class="month-bar-btn rounded-lg border px-2.5 py-1.5 text-left leading-tight ${on ? "bg-slate-800 text-white border-slate-800" : dim ? "bg-white text-slate-300 border-slate-200" : "bg-white hover:bg-slate-50 text-slate-700 border-slate-200"}" data-scope="${scope}" data-from="${from}" data-to="${to}" title="${finEsc(title)}" aria-pressed="${on}">${inner}</button>`;
+  // 小按鈕：月份只顯示「N 月」和筆數，金額放在滑鼠移上去的提示裡，12 個月排成一列
+  const btn = (from, to, on, inner, title, dim, extra = "") => `<button type="button" class="month-bar-btn rounded border px-1.5 py-0.5 text-xs leading-tight whitespace-nowrap ${extra} ${on ? "bg-slate-800 text-white border-slate-800" : dim ? "bg-white text-slate-300 border-slate-200" : "bg-white hover:bg-slate-100 text-slate-700 border-slate-200"}" data-scope="${scope}" data-from="${from}" data-to="${to}" title="${finEsc(title)}" aria-pressed="${on}">${inner}</button>`;
   const yearStat = stat(items.filter(x => (x.date || "").startsWith(year)));
+  const u = unit === "invoice" ? "張" : "筆";
   return `
-  <div class="bg-white rounded-xl shadow-sm px-4 py-3 mb-4">
-    <div class="flex flex-wrap items-center gap-2 mb-2">
-      <span class="text-xs text-slate-500 mr-1">${unit === "invoice" ? "依發票日期" : "依匯款日期"}</span>
-      ${years.map(y => btn(`${y}-01-01`, `${y}-12-31`, ym.year === y && !ym.month, `<span class="text-sm font-semibold">${y} 年</span>`, `看 ${y} 年全年`)).join("")}
-      ${btn("", "", all, `<span class="text-sm">全部</span>`, "看全部年份")}
-      <span class="text-xs text-slate-500 ml-auto">${year} 年：${yearStat.n} ${unit === "invoice" ? "張" : "筆"}${money(yearStat) ? `，${money(yearStat)}` : ""}</span>
-    </div>
-    <div class="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-12 gap-1.5">
+  <div class="bg-white rounded-xl shadow-sm px-3 py-2 mb-3 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+    <span class="text-xs text-slate-500">${unit === "invoice" ? "發票日期" : "匯款日期"}</span>
+    ${years.map(y => btn(`${y}-01-01`, `${y}-12-31`, ym.year === y && !ym.month, `${y} 年`, `看 ${y} 年全年：${stat(items.filter(x => (x.date || "").startsWith(y))).n} ${u}`)).join("")}
+    ${btn("", "", all, "全部", "看全部年份")}
+    <span class="text-slate-300">｜</span>
+    <div class="grid grid-cols-12 gap-1 flex-1 min-w-[36rem]">
       ${Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, "0")).map(m => {
         const s = stat(items.filter(x => (x.date || "").startsWith(`${year}-${m}`)));
         const on = ym.year === year && ym.month === m;
-        return btn(`${year}-${m}-01`, lastDay(m), on, `<span class="block text-sm font-semibold">${Number(m)} 月</span><span class="block text-[11px] ${on ? "text-slate-200" : "text-slate-400"}">${s.n ? `${s.n} ${unit === "invoice" ? "張" : "筆"}` : "—"}</span>${s.n ? `<span class="block text-[11px] ${on ? "text-slate-200" : "text-slate-500"} truncate">${money(s)}</span>` : ""}`, `${year} 年 ${Number(m)} 月：${s.n} ${unit === "invoice" ? "張" : "筆"}${money(s) ? `，${money(s)}` : ""}`, !s.n);
+        return btn(`${year}-${m}-01`, lastDay(m), on, `${Number(m)}月<span class="ml-0.5 ${on ? "text-slate-300" : "text-slate-400"}">${s.n || ""}</span>`, `${year} 年 ${Number(m)} 月：${s.n} ${u}${money(s) ? `，${money(s)}` : ""}`, !s.n, "text-center");
       }).join("")}
     </div>
+    <span class="text-xs text-slate-500 whitespace-nowrap">${year} 年 ${yearStat.n} ${u}${money(yearStat) ? `，${money(yearStat)}` : ""}</span>
   </div>`;
 }
 // 清單裡每個月開頭的一列小標題（只在依日期排序時加）

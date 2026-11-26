@@ -29,6 +29,10 @@
   .ledger-table > tbody > tr.split-head > td { background-color: #e7ecf1; color: #64748b; padding-top: 4px; padding-bottom: 4px; border-top: 1px solid #d5dce4; }
   .ledger-table > tbody > tr.split-row:hover > td { background-color: #e9eef3; }
   .ledger-table > tbody > tr.split-head:hover > td { background-color: #e7ecf1; }
+  /* 可以展開／收起的工具列標題（登錄發票、匯入、貼上、帳戶間轉帳…）：字大一號、深藍灰色、左邊一條線，和一般文字分得出來 */
+  #inv-form-toggle, #ii-toggle, #ap-toggle, #li-toggle, .fold-summary { font-size: 1rem !important; color: #2c4a6e !important; }
+  #inv-form-toggle > span:first-child, #ii-toggle > span:first-child, #ap-toggle > span:first-child, #li-toggle > span:first-child, .fold-summary { border-left: 3px solid #9db2c9; padding-left: 0.5rem; }
+  #inv-form-toggle > span:last-child, #ii-toggle > span:last-child, #ap-toggle > span:last-child, #li-toggle > span:last-child { color: #5b7593; font-size: 0.8125rem; }
   /* 清單裡每個月開頭的小標題列 */
   .grid-table > tbody > tr.month-head > td { background-color: #e9edf2; color: #334155; border-top: 1px solid #cdd6e0; border-bottom: 1px solid #cdd6e0; border-right: 0; }
   .grid-table > tbody > tr.month-head > td .text-xs { color: #64748b; }

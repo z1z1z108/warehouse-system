@@ -624,7 +624,7 @@ function finRenderLedger() {
     <p id="led-msg" class="text-xs hidden mt-2"></p>
 
     <details class="mt-4 border-t pt-3">
-      <summary class="text-sm text-slate-600 cursor-pointer">帳戶間轉帳（自己的帳戶互轉，不算收入／支出）</summary>
+      <summary class="fold-summary text-sm text-slate-600 cursor-pointer">帳戶間轉帳（自己的帳戶互轉，不算收入／支出）</summary>
       <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3 items-end">
         <div><label class="text-xs text-slate-500">日期</label><input id="tr-date" type="date" value="${todayISO()}" class="w-full border rounded-lg px-3 py-2 text-sm mt-1"/></div>
         <div><label class="text-xs text-slate-500">轉出帳戶</label><select id="tr-from" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">${accounts.map(a => `<option value="${finEsc(a.id)}">${finEsc(a.name)}</option>`).join("")}</select></div>
@@ -1401,7 +1401,7 @@ function finRenderEntrySplit() {
     <div id="sp-rows" class="bg-slate-50 rounded-lg p-2">${finSplitDraft.rows.map(finSplitRow).join("")}</div>
     <button type="button" id="sp-add" class="text-sm text-blue-600 hover:underline mt-2">＋ 新增一筆</button>
     <details class="mt-3 border rounded-lg px-3 py-2 bg-slate-50">
-      <summary class="text-sm text-slate-600 cursor-pointer">📋 從 Excel 貼上（公司原本的帳戶紀錄）</summary>
+      <summary class="fold-summary text-sm text-slate-600 cursor-pointer">📋 從 Excel 貼上（公司原本的帳戶紀錄）</summary>
       <p class="text-xs text-slate-500 mt-2">在 Excel 選取那筆匯款的明細列（編號、日期、類別、收款方、品項、單號、發票號碼、金額）複製後貼在下面。收款方、日期空白的會沿用上一列；發票號碼像 EP-16249898 的會記成電子發票，「收據」記成收據，其他文字放到備註。</p>
       <textarea id="sp-paste" rows="5" class="w-full border rounded-lg px-3 py-2 text-xs font-mono mt-2" placeholder="在這裡貼上（Ctrl+V）"></textarea>
       <div class="flex items-center gap-3 mt-2">
