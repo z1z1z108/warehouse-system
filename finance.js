@@ -154,7 +154,7 @@ function finStatusBadge(label) {
     : /^部分/.test(label) ? "background:#efe2d3;color:#7a4a22"
     : !label || /^未/.test(label) ? "background:#ffe4e6;color:#be123c"
     : "background:#d1fae5;color:#047857";
-  return `<span class="inline-flex items-center justify-center min-w-[5.75rem] px-3 py-2 rounded-full text-[17px] font-medium leading-none whitespace-nowrap" style="${style}">${label}</span>`;
+  return `<span class="inline-flex items-center justify-center min-w-[5.25rem] px-3 py-1.5 rounded-full text-base font-medium leading-none whitespace-nowrap" style="${style}">${label}</span>`;
 }
 function finBindFilter(id, obj, key, afterChange) {
   const el = document.getElementById(id);
