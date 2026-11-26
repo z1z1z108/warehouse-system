@@ -361,6 +361,54 @@ function finInvColValues(i, st, pays) {
     payee: i.payee || "（未填）",
   };
 }
+// ---- 頁面最上面的月份列（發票依發票日期、流水依匯款日期） ----
+// 點年份看整年，點月份只看那個月；和清單「日期」欄的篩選是同一組條件（cf.dateFrom／cf.dateTo），所以兩邊一致
+// items：[{ date, amount, kind }]，kind 是 "out"（支出）或 "in"（收入），用來算每個月的筆數和金額
+function finMonthBar(scope, items, cf, unit) {
+  const years = [...new Set(items.map(x => (x.date || "").slice(0, 4)).filter(Boolean))].sort();
+  const thisYear = String(new Date().getFullYear());
+  if (!years.includes(thisYear)) years.push(thisYear);
+  const ym = typeof dateRangeYearMonth === "function" ? dateRangeYearMonth(cf.dateFrom, cf.dateTo) : { year: "", month: "" };
+  const year = ym.year || (cf.dateFrom || "").slice(0, 4) || thisYear;
+  const all = !cf.dateFrom && !cf.dateTo;
+  const stat = list => ({ n: list.length, out: list.filter(x => x.kind !== "in").reduce((s, x) => s + x.amount, 0), inn: list.filter(x => x.kind === "in").reduce((s, x) => s + x.amount, 0) });
+  const money = s => [s.out && `${unit === "invoice" ? "" : "支 "}${finMoney(s.out)}`, s.inn && `收 ${finMoney(s.inn)}`].filter(Boolean).join("／");
+  const lastDay = m => `${year}-${m}-${String(new Date(Number(year), Number(m), 0).getDate()).padStart(2, "0")}`;
+  const btn = (from, to, on, inner, title, dim) => `<button type="button" class="month-bar-btn rounded-lg border px-2.5 py-1.5 text-left leading-tight ${on ? "bg-slate-800 text-white border-slate-800" : dim ? "bg-white text-slate-300 border-slate-200" : "bg-white hover:bg-slate-50 text-slate-700 border-slate-200"}" data-scope="${scope}" data-from="${from}" data-to="${to}" title="${finEsc(title)}" aria-pressed="${on}">${inner}</button>`;
+  const yearStat = stat(items.filter(x => (x.date || "").startsWith(year)));
+  return `
+  <div class="bg-white rounded-xl shadow-sm px-4 py-3 mb-4">
+    <div class="flex flex-wrap items-center gap-2 mb-2">
+      <span class="text-xs text-slate-500 mr-1">${unit === "invoice" ? "依發票日期" : "依匯款日期"}</span>
+      ${years.map(y => btn(`${y}-01-01`, `${y}-12-31`, ym.year === y && !ym.month, `<span class="text-sm font-semibold">${y} 年</span>`, `看 ${y} 年全年`)).join("")}
+      ${btn("", "", all, `<span class="text-sm">全部</span>`, "看全部年份")}
+      <span class="text-xs text-slate-500 ml-auto">${year} 年：${yearStat.n} ${unit === "invoice" ? "張" : "筆"}${money(yearStat) ? `，${money(yearStat)}` : ""}</span>
+    </div>
+    <div class="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-12 gap-1.5">
+      ${Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, "0")).map(m => {
+        const s = stat(items.filter(x => (x.date || "").startsWith(`${year}-${m}`)));
+        const on = ym.year === year && ym.month === m;
+        return btn(`${year}-${m}-01`, lastDay(m), on, `<span class="block text-sm font-semibold">${Number(m)} 月</span><span class="block text-[11px] ${on ? "text-slate-200" : "text-slate-400"}">${s.n ? `${s.n} ${unit === "invoice" ? "張" : "筆"}` : "—"}</span>${s.n ? `<span class="block text-[11px] ${on ? "text-slate-200" : "text-slate-500"} truncate">${money(s)}</span>` : ""}`, `${year} 年 ${Number(m)} 月：${s.n} ${unit === "invoice" ? "張" : "筆"}${money(s) ? `，${money(s)}` : ""}`, !s.n);
+      }).join("")}
+    </div>
+  </div>`;
+}
+// 清單裡每個月開頭的一列小標題（只在依日期排序時加）
+function finMonthHeadRow(month, colspan, text) {
+  const [y, m] = month.split("-");
+  return `<tr class="month-head"><td colspan="${colspan}" class="px-3 py-1.5"><span class="font-semibold">${y} 年 ${Number(m)} 月</span><span class="text-xs ml-3">${text}</span></td></tr>`;
+}
+function finBindMonthBar(onChange) {
+  document.querySelectorAll(".month-bar-btn").forEach(b => {
+    b.onclick = () => {
+      const cf = COLUMN_FILTERS[b.dataset.scope] && COLUMN_FILTERS[b.dataset.scope]();
+      if (!cf) return;
+      cf.dateFrom = b.dataset.from; cf.dateTo = b.dataset.to;
+      if (onChange) onChange();
+      render();
+    };
+  });
+}
 function finInvColActive(cf) {
   const year = finInvThisYear();   // 預設的今年不算「有篩選」，清除按鈕只在改過時出現
   return !!(cf.noQuery || cf.dateFrom !== year.dateFrom || cf.dateTo !== year.dateTo || cf.numberQuery || cf.itemQuery || cf.noteQuery || cf.categories.length || cf.statuses.length || cf.parties.length || (cf.payees || []).length);
@@ -668,7 +716,14 @@ function finRenderInvoices() {
     ${editing ? `<button id="inv-cancel-edit" class="border rounded-lg px-4 py-2 text-sm hover:bg-slate-100 ml-2">取消編輯</button>` : ""}
     <p id="inv-msg" class="text-xs hidden mt-2"></p>`;
 
+  // 頁面最上面的月份列，和清單每個月的小標題（依日期排序時才分月）
+  const monthBar = finMonthBar("finv", db.finance.invoices.filter(i => i.kind === mode).map(i => ({ date: i.date, amount: i.total, kind: "out" })), colF, "invoice");
+  const byDate = finInvSort[mode].key === "date";
+  const monthSum = {};
+  rows.forEach(i => { const m = (i.date || "").slice(0, 7); const s = monthSum[m] = monthSum[m] || { n: 0, total: 0 }; s.n++; s.total += i.total; });
+
   return `
+  ${monthBar}
   ${inlineEdit ? `
   <div class="bg-white rounded-xl shadow-sm px-6 py-3 mb-6 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
     <span>正在下方清單中編輯發票「${finEsc(editing.number) || "未填號碼"}」，儲存或取消編輯後就能登錄新發票。</span>
@@ -737,7 +792,10 @@ function finRenderInvoices() {
         </tr>
       </thead>
       <tbody>
-        ${rows.map((i, n) => { const open = finInvExpanded.has(i.id); const isEdit = inlineEdit && i.id === editing.id; return `
+        ${rows.map((i, n) => { const open = finInvExpanded.has(i.id); const isEdit = inlineEdit && i.id === editing.id;
+          const m = (i.date || "").slice(0, 7);
+          const head = byDate && m && (n === 0 || (rows[n - 1].date || "").slice(0, 7) !== m) ? finMonthHeadRow(m, isSales ? 14 : 15, `${monthSum[m].n} 張，含稅合計 ${finMoney(monthSum[m].total)}`) : "";
+          return head + `
           <tr class="inv-row data-row ${n % 2 ? "row-alt" : ""} ${isEdit ? "row-editing" : ""} cursor-pointer" data-id="${finEsc(i.id)}" data-row-id="${finEsc(i.id)}">
             <td class="px-3 py-2 text-right text-xs text-slate-400">${n + 1}</td>
             <td class="px-3 py-2">${finInvNoCell(pays[i.id], i)}</td>
@@ -923,6 +981,7 @@ function finBindInvoices() {
   $("inv-f-clear").onclick = () => { Object.assign(finInvFilter, { status: "", month: "", q: "" }); finInvColFilters[mode] = finInvNewColFilter(); render(); };
   $("inv-col-clear")?.addEventListener("click", () => { finInvColFilters[mode] = finInvNewColFilter(); render(); });
   bindColumnFilters();
+  finBindMonthBar();
   finBindInvImport(mode);
   if (mode === "purchase") finBindAcctPaste();
   $("inv-export-btn").onclick = () => {

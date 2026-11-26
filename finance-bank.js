@@ -555,7 +555,12 @@ function finRenderLedger() {
   const allSelected = pageRows.length > 0 && pageRows.every(e => finLedgerSel.has(e.id));
   const reconOptions = [["", "全部"], ["open", "未核對"], ["partial", "部分核對"], ["settled", "已核對"], ["loan", "貸款扣款"], ["nomatch", "不需核對"]];
 
+  // 頁面最上面的月份列（依匯款日期；有選帳戶就只算那個帳戶），清單每個月開頭加小標題
+  const monthBar = finMonthBar("fled", db.finance.ledger.filter(e => !finIsTransfer(e) && (!f.account || e.accountId === f.account)).map(e => ({ date: e.date, amount: e.amount, kind: e.type === "income" ? "in" : "out" })), cf, "ledger");
+  const ledMonth = {};
+  rows.forEach(e => { const m = (e.date || "").slice(0, 7); const s = ledMonth[m] = ledMonth[m] || { n: 0, out: 0, inn: 0 }; s.n++; if (!finIsTransfer(e)) { if (e.type === "income") s.inn += e.amount; else s.out += e.amount; } });
   return `
+  ${monthBar}
   <div class="bg-white rounded-xl shadow-sm p-6 mb-4">
     <div class="flex items-center justify-between mb-3">
       <p class="font-semibold text-sm text-slate-700">新增流水</p>
@@ -718,7 +723,10 @@ function finRenderLedger() {
           <th class="px-3 py-2 sticky right-0 bg-slate-100"></th></tr>
       </thead>
       <tbody>
-        ${pageRows.map((e, n) => { const isEdit = finLedgerEditId === e.id; const rs = finReconStatus(e, ctx); const nums = (e.allocations || []).map(a => invById[a.invoiceId]?.number).filter(Boolean); const transfer = finIsTransfer(e); const splits = e.splits || []; const splitOpen = finLedgerExpanded.has(e.id); return `
+        ${pageRows.map((e, n) => { const isEdit = finLedgerEditId === e.id; const rs = finReconStatus(e, ctx); const nums = (e.allocations || []).map(a => invById[a.invoiceId]?.number).filter(Boolean); const transfer = finIsTransfer(e); const splits = e.splits || []; const splitOpen = finLedgerExpanded.has(e.id);
+          const lm = (e.date || "").slice(0, 7);
+          const monthHead = lm && (n === 0 || (pageRows[n - 1].date || "").slice(0, 7) !== lm) ? finMonthHeadRow(lm, 14, [`${ledMonth[lm].n} 筆`, ledMonth[lm].out && `支出 ${finMoney(ledMonth[lm].out)}`, ledMonth[lm].inn && `收入 ${finMoney(ledMonth[lm].inn)}`].filter(Boolean).join("，")) : "";
+          return monthHead + `
           <tr class="data-row ${!e.category && !transfer ? "row-warn" : ""} ${isEdit ? "row-editing" : ""}" data-row-id="${finEsc(e.id)}">
             <td class="px-3 py-2"><input type="checkbox" class="led-sel" data-id="${finEsc(e.id)}" ${finLedgerSel.has(e.id) ? "checked" : ""}/></td>
             <td class="px-3 py-2 whitespace-nowrap"><div class="font-mono">${finEsc(e.no) || `<span class="text-slate-300">-</span>`}</div>${f.account ? "" : `<div class="text-[11px] text-slate-400">${finEsc(finAccountName(e.accountId))}</div>`}</td>
@@ -947,6 +955,7 @@ function finBindLedger() {
   $("led-f-clear").onclick = () => { finLedgerFilter = { account: "", type: "", category: "", recon: "", month: "", q: "" }; finLedColFilter = finLedNewColFilter(); resetPage(); render(); };
   $("led-col-clear")?.addEventListener("click", () => { finLedColFilter = finLedNewColFilter(); resetPage(); render(); });
   if (typeof finBindLedImport === "function") finBindLedImport();
+  finBindMonthBar(resetPage);
   bindColumnFilters();
   $("led-prev")?.addEventListener("click", () => { if (finLedgerPage > 0) { finLedgerPage--; render(); document.querySelector("main").scrollTop = 0; } });
   $("led-next")?.addEventListener("click", () => { finLedgerPage++; render(); document.querySelector("main").scrollTop = 0; });
